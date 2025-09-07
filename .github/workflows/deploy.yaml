@@ -16,7 +16,7 @@ jobs:
           script: |
             # Set project variables (FIXED: match ecosystem.config.js)
             export PROJECT_NAME="enfyra-be"
-            export APP_DIR="/apps/enfyra-backend"
+            export APP_DIR="/apps/be"
             
             # Setup PATH for tools
             export PATH="$PATH:/usr/bin:/usr/local/bin:$HOME/.local/bin"
