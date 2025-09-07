@@ -1,0 +1,104 @@
+name: Deploy to VPS
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to VPS
+        uses: appleboy/ssh-action@v0.1.5
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          password: ${{ secrets.VPS_PASSWORD }}
+          script: |
+            # Set project variables (FIXED: match ecosystem.config.js)
+            export PROJECT_NAME="enfyra-be"
+            export APP_DIR="/apps/enfyra-backend"
+            
+            # Setup PATH for tools
+            export PATH="$PATH:/usr/bin:/usr/local/bin:$HOME/.local/bin"
+            
+            # Find tool paths
+            GIT_PATH=$(which git || echo "/usr/bin/git")
+            NPM_PATH=$(which npm || echo "/usr/bin/npm")
+            YARN_PATH=$(which yarn || echo "")
+            PM2_PATH=$(which pm2 || echo "$HOME/.local/bin/pm2")
+            
+            # Install yarn if not found
+            if [ -z "$YARN_PATH" ]; then
+              echo "Yarn not found, installing..."
+              $NPM_PATH install -g yarn
+              YARN_PATH=$(which yarn || echo "$HOME/.local/bin/yarn")
+            fi
+            
+            echo "=== Starting PM2 Deployment ==="
+            echo "Tools found:"
+            echo "Git: $GIT_PATH"
+            echo "NPM: $NPM_PATH"
+            echo "Yarn: $YARN_PATH" 
+            echo "PM2: $PM2_PATH"
+            
+            # Navigate to app directory
+            cd $APP_DIR
+            echo "Current directory: $(pwd)"
+            
+            # Pull latest code with conflict resolution
+            echo "Pulling latest code..."
+            $GIT_PATH fetch origin main
+            $GIT_PATH reset --hard origin/main
+            $GIT_PATH clean -fd
+            echo "✅ Code updated to latest from git (local changes discarded)"
+            
+            # Install dependencies with yarn
+            echo "Installing dependencies with yarn..."
+            $YARN_PATH install --frozen-lockfile
+            
+            # Setup environment file
+            echo "Setting up environment..."
+            if [ ! -f .env ]; then
+              echo "⚠️  .env file not found! Creating from template..."
+              cp env_example .env || echo "env_example not found, manual .env setup required"
+            fi
+            
+            # Build application
+            echo "Building application..."
+            $YARN_PATH build
+            
+            # Stop PM2 application completely to avoid conflicts
+            echo "Stopping PM2 application..."
+            $PM2_PATH stop $PROJECT_NAME || true
+            $PM2_PATH delete $PROJECT_NAME || true
+            
+            # Clean start PM2 application
+            echo "Starting PM2 application clean..."
+            $PM2_PATH start ecosystem.config.js
+            
+            # Wait for app to initialize
+            echo "Waiting for app initialization..."
+            sleep 10
+            
+            # Show PM2 status
+            $PM2_PATH status
+            
+            # Health check
+            echo "=== Health Check ==="
+            sleep 5
+            if $PM2_PATH show $PROJECT_NAME | grep -q "online"; then
+              echo "✅ Application is running successfully"
+            else
+              echo "❌ Application failed to start"
+              $PM2_PATH logs $PROJECT_NAME --lines 20 --nostream
+              exit 1
+            fi
+            
+            # Show logs without tailing (just print and exit)
+            echo "=== Recent logs ==="
+            $PM2_PATH logs $PROJECT_NAME --lines 30 --nostream || {
+              echo "Using alternative log method..."
+              timeout 3s $PM2_PATH logs $PROJECT_NAME --lines 30 || true
+            }
+            
+            echo "=== PM2 Deployment completed successfully ==="
