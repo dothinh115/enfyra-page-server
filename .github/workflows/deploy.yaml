@@ -8,12 +8,22 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
+      - name: Debug connection info
+        run: |
+          echo "Attempting to connect to host..."
+          echo "Host length: ${#VPS_HOST}"
+          echo "Username length: ${#VPS_USER}"
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+      
       - name: Deploy to VPS
         uses: appleboy/ssh-action@v0.1.5
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           password: ${{ secrets.VPS_PASSWORD }}
+          port: 22
           script: |
             # Set project variables (FIXED: match ecosystem.config.js)
             export PROJECT_NAME="enfyra-be"
