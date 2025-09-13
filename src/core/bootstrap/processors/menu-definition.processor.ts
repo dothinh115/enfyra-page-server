@@ -1,87 +1,87 @@
 import { Injectable } from '@nestjs/common';
 import { Repository } from 'typeorm';
-import { BaseTableProcessor } from './base-table-processor';
+import { BaseTableProcessor, UpsertResult } from './base-table-processor';
 
 @Injectable()
 export class MenuDefinitionProcessor extends BaseTableProcessor {
   async transformRecords(records: any[], context: { repo: Repository<any> }): Promise<any[]> {
     const { repo } = context;
-    
-    // Process records in order: sidebars first, then menu items
-    const transformedRecords = [];
-    
-    // First, process all sidebars
+    const sidebarCache = new Map();
+    const parentCache = new Map();
+
+    // First, ensure all sidebars and potential parents exist
     for (const record of records) {
       if (record.type === 'Mini Sidebar') {
-        transformedRecords.push(record);
+        let existing = await repo.findOne({
+          where: { type: 'Mini Sidebar', label: record.label }
+        });
+
+        if (!existing) {
+          existing = await repo.save(repo.create(record));
+          this.logger.debug(`Created sidebar "${record.label}" with id ${existing.id}`);
+        }
+        sidebarCache.set(record.label, existing.id);
       }
     }
-    
-    // Then process menu items and dropdowns with sidebar references
+
+    // Then ensure all potential parents exist
     for (const record of records) {
-      if (record.type === 'Menu' || record.type === 'Dropdown Menu') {
-        const transformed = { ...record };
-        
-        // Convert sidebar name to ID if needed
-        if (transformed.sidebar && typeof transformed.sidebar === 'string') {
-          // Look for sidebar in both existing DB and records being processed
-          let sidebar = await repo.findOne({
-            where: { type: 'Mini Sidebar', label: transformed.sidebar }
+      if (record.parent && typeof record.parent === 'string') {
+        if (!parentCache.has(record.parent)) {
+          let existing = await repo.findOne({
+            where: { label: record.parent }
           });
 
-          // If not found in DB, look in current batch of records
-          if (!sidebar) {
-            const sidebarRecord = records.find(r =>
-              (r.type === 'Mini Sidebar') && r.label === transformed.sidebar
-            );
-            if (sidebarRecord) {
-              // Create the sidebar first if it doesn't exist
-              const created = repo.create(sidebarRecord);
-              sidebar = await repo.save(created);
-              this.logger.debug(`Created sidebar "${transformed.sidebar}" with id ${sidebar.id}`);
-            }
-          }
-
-          if (sidebar) {
-            transformed.sidebar = sidebar;
-          } else {
-            // Remove invalid sidebar reference
-            delete transformed.sidebar;
-            this.logger.warn(`Sidebar "${record.sidebar}" not found for menu item "${record.label}"`);
-          }
-        }
-
-        // Convert parent name to ID if needed
-        if (transformed.parent && typeof transformed.parent === 'string') {
-          // Look for parent in both existing DB and records being processed
-          let parent = await repo.findOne({
-            where: { label: transformed.parent }
-          });
-
-          // If not found in DB, look in current batch of records
-          if (!parent) {
-            const parentRecord = records.find(r => r.label === transformed.parent);
+          if (!existing) {
+            // Find parent record in current batch
+            const parentRecord = records.find(r => r.label === record.parent);
             if (parentRecord) {
-              // Create the parent first if it doesn't exist
-              const created = repo.create(parentRecord);
-              parent = await repo.save(created);
-              this.logger.debug(`Created parent "${transformed.parent}" with id ${parent.id}`);
+              existing = await repo.save(repo.create(parentRecord));
+              this.logger.debug(`Created parent "${record.parent}" with id ${existing.id}`);
             }
           }
 
-          if (parent) {
-            transformed.parent = parent;
-          } else {
-            // Remove invalid parent reference
-            delete transformed.parent;
-            this.logger.warn(`Parent "${record.parent}" not found for menu item "${record.label}"`);
+          if (existing) {
+            parentCache.set(record.parent, existing.id);
           }
         }
-        
+      }
+    }
+
+    // Then process all records and replace string references with IDs
+    const transformedRecords = [];
+
+    for (const record of records) {
+      const transformed = { ...record };
+
+      // Replace sidebar string with ID object
+      if (transformed.sidebar && typeof transformed.sidebar === 'string') {
+        const sidebarId = sidebarCache.get(transformed.sidebar);
+        if (sidebarId) {
+          transformed.sidebar = { id: sidebarId };
+        } else {
+          delete transformed.sidebar;
+          this.logger.warn(`Sidebar "${record.sidebar}" not found for menu item "${record.label}"`);
+        }
+      }
+
+      // Handle parent references
+      if (transformed.parent && typeof transformed.parent === 'string') {
+        const parentId = parentCache.get(transformed.parent);
+        if (parentId) {
+          transformed.parent = { id: parentId };
+        } else {
+          delete transformed.parent;
+          this.logger.warn(`Parent "${record.parent}" not found for menu item "${record.label}"`);
+        }
+      }
+
+      // Only add records that haven't been created yet
+      if (record.type !== 'Mini Sidebar' && !parentCache.has(record.label)) {
         transformedRecords.push(transformed);
       }
     }
-    
+
     return transformedRecords;
   }
 
