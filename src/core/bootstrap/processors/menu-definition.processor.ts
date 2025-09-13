@@ -54,11 +54,12 @@ export class MenuDefinitionProcessor extends BaseTableProcessor {
     for (const record of records) {
       const transformed = { ...record };
 
-      // Replace sidebar string with ID object
+      // Replace sidebar string with ID for database
       if (transformed.sidebar && typeof transformed.sidebar === 'string') {
         const sidebarId = sidebarCache.get(transformed.sidebar);
         if (sidebarId) {
-          transformed.sidebar = { id: sidebarId };
+          delete transformed.sidebar;
+          transformed.sidebarId = sidebarId;
         } else {
           delete transformed.sidebar;
           this.logger.warn(`Sidebar "${record.sidebar}" not found for menu item "${record.label}"`);
@@ -69,7 +70,8 @@ export class MenuDefinitionProcessor extends BaseTableProcessor {
       if (transformed.parent && typeof transformed.parent === 'string') {
         const parentId = parentCache.get(transformed.parent);
         if (parentId) {
-          transformed.parent = { id: parentId };
+          delete transformed.parent;
+          transformed.parentId = parentId;
         } else {
           delete transformed.parent;
           this.logger.warn(`Parent "${record.parent}" not found for menu item "${record.label}"`);
