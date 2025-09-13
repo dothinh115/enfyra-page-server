@@ -6,82 +6,57 @@ import { BaseTableProcessor, UpsertResult } from './base-table-processor';
 export class MenuDefinitionProcessor extends BaseTableProcessor {
   async transformRecords(records: any[], context: { repo: Repository<any> }): Promise<any[]> {
     const { repo } = context;
-    const sidebarCache = new Map();
-    const parentCache = new Map();
 
-    // First, ensure all sidebars and potential parents exist
-    for (const record of records) {
-      if (record.type === 'Mini Sidebar') {
-        let existing = await repo.findOne({
-          where: { type: 'Mini Sidebar', label: record.label }
-        });
+    // Create sidebar cache để tối ưu lookup
+    const sidebarCache = new Map<string, any>();
+    const parentCache = new Map<string, any>();
 
-        if (!existing) {
-          existing = await repo.save(repo.create(record));
-          this.logger.debug(`Created sidebar "${record.label}" with id ${existing.id}`);
-        }
-        sidebarCache.set(record.label, existing.id);
-      }
+    // Tìm tất cả mini sidebars để làm sidebar cache
+    const miniSidebars = await repo.find({
+      where: { type: 'Mini Sidebar' },
+      select: ['id', 'label']
+    });
+
+    for (const sidebar of miniSidebars) {
+      sidebarCache.set(sidebar.label, { id: sidebar.id });
     }
 
-    // Then ensure all potential parents exist
-    for (const record of records) {
-      if (record.parent && typeof record.parent === 'string') {
-        if (!parentCache.has(record.parent)) {
-          let existing = await repo.findOne({
-            where: { label: record.parent }
-          });
+    // Tìm tất cả dropdown menus để làm parent cache
+    const dropdownMenus = await repo.find({
+      where: { type: 'Dropdown Menu' },
+      select: ['id', 'label']
+    });
 
-          if (!existing) {
-            // Find parent record in current batch
-            const parentRecord = records.find(r => r.label === record.parent);
-            if (parentRecord) {
-              existing = await repo.save(repo.create(parentRecord));
-              this.logger.debug(`Created parent "${record.parent}" with id ${existing.id}`);
-            }
-          }
-
-          if (existing) {
-            parentCache.set(record.parent, existing.id);
-          }
-        }
-      }
+    for (const parent of dropdownMenus) {
+      parentCache.set(parent.label, { id: parent.id });
     }
 
-    // Then process all records and replace string references with IDs
     const transformedRecords = [];
 
     for (const record of records) {
       const transformed = { ...record };
 
-      // Replace sidebar string with ID for database
+      // Handle sidebar reference
       if (transformed.sidebar && typeof transformed.sidebar === 'string') {
-        const sidebarId = sidebarCache.get(transformed.sidebar);
-        if (sidebarId) {
-          delete transformed.sidebar;
-          transformed.sidebarId = sidebarId;
+        const sidebarRef = sidebarCache.get(transformed.sidebar);
+        if (sidebarRef) {
+          transformed.sidebar = sidebarRef;
         } else {
           delete transformed.sidebar;
-          this.logger.warn(`Sidebar "${record.sidebar}" not found for menu item "${record.label}"`);
         }
       }
 
-      // Handle parent references
+      // Handle parent reference
       if (transformed.parent && typeof transformed.parent === 'string') {
-        const parentId = parentCache.get(transformed.parent);
-        if (parentId) {
-          delete transformed.parent;
-          transformed.parentId = parentId;
+        const parentRef = parentCache.get(transformed.parent);
+        if (parentRef) {
+          transformed.parent = parentRef;
         } else {
           delete transformed.parent;
-          this.logger.warn(`Parent "${record.parent}" not found for menu item "${record.label}"`);
         }
       }
 
-      // Only add records that haven't been created yet
-      if (record.type !== 'Mini Sidebar' && !parentCache.has(record.label)) {
-        transformedRecords.push(transformed);
-      }
+      transformedRecords.push(transformed);
     }
 
     return transformedRecords;
