@@ -43,7 +43,7 @@ export class MenuDefinitionProcessor extends BaseTableProcessor {
           }
 
           if (sidebar) {
-            transformed.sidebar = sidebar.id;
+            transformed.sidebar = sidebar;
           } else {
             // Remove invalid sidebar reference
             delete transformed.sidebar;
@@ -70,7 +70,7 @@ export class MenuDefinitionProcessor extends BaseTableProcessor {
           }
 
           if (parent) {
-            transformed.parent = parent.id;
+            transformed.parent = parent;
           } else {
             // Remove invalid parent reference
             delete transformed.parent;
