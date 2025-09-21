@@ -38,6 +38,8 @@ export class RoleGuard implements CanActivate {
         }
         
         // Then check role-based access (existing logic)
+        console.log('permission', permission);
+        console.log('user', req.user);
         return permission?.role?.id === req.user?.role?.id;
       }
     );
