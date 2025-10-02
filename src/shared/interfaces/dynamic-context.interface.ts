@@ -3,7 +3,8 @@ import { UploadedFileInfo } from './file-management.interface';
 
 export interface TDynamicContext {
   $body: any;
-  $errors: any;
+  $throw: any;
+  $error?: any;
   $logs: (...args: any[]) => void;
   $helpers: {
     $jwt: (payload: any, exp: string) => string;
@@ -29,6 +30,29 @@ export interface TDynamicContext {
   $req: Request;
   $share: {
     $logs: any[];
+  };
+  $api: {
+    request: {
+      method: string;
+      url: string;
+      timestamp: string;
+      correlationId: string;
+      userAgent?: string;
+      ip?: string;
+    };
+    response?: {
+      statusCode: number;
+      responseTime: number;
+      timestamp: string;
+    };
+    error?: {
+      message: string;
+      stack: string;
+      name: string;
+      timestamp: string;
+      statusCode: number;
+      details: any;
+    };
   };
   $uploadedFile?: UploadedFileInfo;
 }

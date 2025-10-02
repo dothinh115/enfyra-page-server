@@ -43,7 +43,7 @@ export class RouteDetectMiddleware implements NestMiddleware {
       // Create context first
       const context: TDynamicContext = {
         $body: req.body,
-        $errors: ScriptErrorFactory.createErrorHandlers(),
+        $throw: ScriptErrorFactory.createThrowHandlers(),
         $logs(...args) {},
         $helpers: {
           $jwt: (payload: any, exp: string) =>
@@ -77,6 +77,16 @@ export class RouteDetectMiddleware implements NestMiddleware {
         $req: req,
         $share: {
           $logs: [],
+        },
+        $api: {
+          request: {
+            method: req.method,
+            url: req.url,
+            timestamp: new Date().toISOString(),
+            correlationId: req.headers['x-correlation-id'] as string || this.generateCorrelationId(),
+            userAgent: req.headers['user-agent'],
+            ip: req.ip || req.connection.remoteAddress,
+          },
         },
       };
       context.$logs = (...args: any[]) => {
@@ -174,5 +184,9 @@ export class RouteDetectMiddleware implements NestMiddleware {
     }
 
     return null;
+  }
+
+  private generateCorrelationId(): string {
+    return `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   }
 }
