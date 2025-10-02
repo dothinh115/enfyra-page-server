@@ -6,12 +6,12 @@ import { TableHandlerService } from '../../modules/table-management/services/tab
 import { DynamicRepository } from '../../modules/dynamic-api/repositories/dynamic.repository';
 import { TDynamicContext } from '../interfaces/dynamic-context.interface';
 import { QueryEngine } from '../../infrastructure/query-engine/services/query-engine.service';
-import { RouteCacheService } from '../../infrastructure/redis/services/route-cache.service';
+import { RouteCacheService } from '../../infrastructure/cache/services/route-cache.service';
 import { SystemProtectionService } from '../../modules/dynamic-api/services/system-protection.service';
 import { BcryptService } from '../../core/auth/services/bcrypt.service';
 import { ScriptErrorFactory } from '../../shared/utils/script-error-factory';
 import { autoSlug } from '../utils/auto-slug.helper';
-import { CacheService } from '../../infrastructure/redis/services/cache.service';
+import { CacheService } from '../../infrastructure/cache/services/cache.service';
 
 @Injectable()
 export class RouteDetectMiddleware implements NestMiddleware {
@@ -55,21 +55,7 @@ export class RouteDetectMiddleware implements NestMiddleware {
           },
           autoSlug: autoSlug,
         },
-        $cache: {
-          acquire: async (key: string, value: any, ttlMs: number) =>
-            await this.cacheService.acquire(key, value, ttlMs),
-          release: async (key: string, value: any) =>
-            await this.cacheService.release(key, value),
-          get: async (key: string) => await this.cacheService.get(key),
-          set: async (key: string, value: any, ttlMs?: number) =>
-            await this.cacheService.set(key, value, ttlMs),
-          exists: async (key: string, value: any) =>
-            await this.cacheService.exists(key, value),
-          deleteKey: async (key: string) =>
-            await this.cacheService.deleteKey(key),
-          setNoExpire: async (key: string, value: any) =>
-            await this.cacheService.setNoExpire(key, value),
-        },
+        $cache: this.cacheService,
         $params: matchedRoute.params ?? {},
         $query: req.query ?? {},
         $user: req.user ?? undefined,
@@ -109,6 +95,7 @@ export class RouteDetectMiddleware implements NestMiddleware {
             queryEngine: this.queryEngine,
             routeCacheService: this.routeCacheService,
             systemProtectionService: this.systemProtectionService,
+            bootstrapScriptService: undefined, // Not available in middleware context
           });
 
           await dynamicRepo.init();

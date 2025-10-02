@@ -135,6 +135,7 @@
         "columns": [
             { "name": "id", "type": "int", "isPrimary": true, "isGenerated": true, "isNullable": false, "isSystem": true },
             { "name": "logic", "type": "code", "isSystem":true, "isNullable": true },
+            { "name": "timeout", "type": "int", "isSystem": true, "isNullable": true, "description": "Timeout in milliseconds for route handler execution. If not set, uses default system timeout." },
             { "name": "description", "type": "text", "isSystem": true }
         ],
         "relations": [
@@ -151,6 +152,8 @@
             { "name": "name", "type": "varchar", "isSystem": true, "isNullable": false },
             { "name": "preHook", "type": "code", "isNullable": true, "isSystem": true },
             { "name": "afterHook", "type": "code", "isNullable": true, "isSystem": true },
+            { "name": "preHookTimeout", "type": "int", "isSystem": true, "isNullable": true, "description": "Timeout in milliseconds for preHook execution. If not set, uses default system timeout." },
+            { "name": "afterHookTimeout", "type": "int", "isSystem": true, "isNullable": true, "description": "Timeout in milliseconds for afterHook execution. If not set, uses default system timeout." },
             { "name": "priority", "type": "int", "isNullable": true, "isSystem": true, "defaultValue": 0 },
             { "name": "isEnabled", "type": "boolean", "isNullable": false, "isSystem": true, "defaultValue": false },
             { "name": "description", "type": "text", "isSystem": true },
@@ -317,6 +320,25 @@
         ],
         "relations": [
             { "propertyName": "installedBy", "type": "many-to-one", "targetTable": "user_definition", "isSystem": true, "isNullable": false }
+        ]
+    },
+    "bootstrap_script_definition": {
+        "name": "bootstrap_script_definition",
+        "isSystem": true,
+        "uniques": [["name"]],
+        "columns": [
+            { "name": "id", "type": "int", "isPrimary": true, "isGenerated": true, "isNullable": false, "isSystem": true },
+            { "name": "name", "type": "varchar", "isNullable": false, "isSystem": true, "description": "Unique name identifier for the bootstrap script" },
+            { "name": "description", "type": "text", "isSystem": true, "description": "Description of what the script does" },
+            { "name": "logic", "type": "code", "isNullable": false, "isSystem": true, "description": "The actual script code to execute" },
+            { "name": "timeout", "type": "int", "isSystem": true, "isNullable": true, "description": "Timeout in milliseconds for script execution. If not set, uses default system timeout." },
+            { "name": "priority", "type": "int", "isNullable": false, "isSystem": true, "defaultValue": 0, "description": "Execution priority order (lower numbers execute first)" },
+            { "name": "isEnabled", "type": "boolean", "isNullable": false, "isSystem": true, "defaultValue": true, "description": "Whether the script is enabled for execution" },
+            { "name": "isSystem", "type": "boolean", "isNullable": false, "isSystem": true, "defaultValue": false, "description": "Whether this is a system-generated script" }
+        ],
+        "relations": [
+            { "propertyName": "createdBy", "type": "many-to-one", "targetTable": "user_definition", "isSystem": true, "isNullable": true, "description": "User who created the script" },
+            { "propertyName": "updatedBy", "type": "many-to-one", "targetTable": "user_definition", "isSystem": true, "isNullable": true, "description": "User who last updated the script" }
         ]
     }
 }
