@@ -57,6 +57,11 @@ export class DynamicRepository {
 
   async init() {
     this.repo = this.dataSourceService.getRepository(this.tableName);
+    if (!this.repo) {
+      throw new BadRequestException(
+        `Repository for table '${this.tableName}' not found. Ensure entity exists and name matches.`,
+      );
+    }
   }
 
   async find(opt: { where?: any; fields?: string | string[] }) {
@@ -75,6 +80,16 @@ export class DynamicRepository {
 
   async create(body: any) {
     try {
+      // Ensure repository is initialized (defensive in case instance crossed process boundary)
+      if (!this.repo) {
+        await this.init();
+        if (!this.repo) {
+          throw new BadRequestException(
+            `Repository not initialized for table '${this.tableName}'.`,
+          );
+        }
+      }
+
       await this.systemProtectionService.assertSystemSafe({
         operation: 'create',
         tableName: this.tableName,
