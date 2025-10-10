@@ -1,11 +1,11 @@
 import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn } from 'typeorm';
 
-@Entity('test2')
-export class Test2 {
+@Entity('test')
+export class Test {
     @PrimaryGeneratedColumn('increment')
     id: number;
     @Column({ type: "varchar", nullable: true })
-    ec: string;
+    test: string;
     @CreateDateColumn()
     createdAt: Date;
     @UpdateDateColumn()
