@@ -76,7 +76,7 @@ export class DefaultDataService {
   }
 
   async insertAllDefaultRecords(): Promise<void> {
-    this.logger.log('🚀 Starting default data upsert...');
+    this.logger.log('Starting default data upsert...');
     
     // MongoDB: Direct JSON insert (simpler, no processors needed)
     if (this.dbType === 'mongodb') {
@@ -91,7 +91,7 @@ export class DefaultDataService {
     for (const [tableName, rawRecords] of Object.entries(initJson)) {
       const processor = this.processors.get(tableName);
       if (!processor) {
-        this.logger.warn(`⚠️ No processor found for '${tableName}', skipping.`);
+        this.logger.warn(`No processor found for '${tableName}', skipping.`);
         continue;
       }
 
@@ -100,23 +100,24 @@ export class DefaultDataService {
         continue;
       }
 
-      this.logger.log(`🔄 Processing '${tableName}'...`);
+      this.logger.log(`Processing '${tableName}'...`);
 
       try {
         const records = Array.isArray(rawRecords) ? rawRecords : [rawRecords];
-        
-        const context = { knex: qb, tableName };
-        
-        const result = await processor.processKnex(records, qb, tableName, context);
+
+        const dbType = this.queryBuilder.getDatabaseType();
+        const context = { knex: qb, tableName, dbType };
+
+        const result = await processor.processSql(records, qb, tableName, context);
         
         totalCreated += result.created;
         totalSkipped += result.skipped;
         
         this.logger.log(
-          `✅ '${tableName}': ${result.created} created, ${result.skipped} skipped`
+          `'${tableName}': ${result.created} created, ${result.skipped} skipped`
         );
       } catch (error) {
-        this.logger.error(`❌ Error processing '${tableName}': ${error.message}`);
+        this.logger.error(`Error processing '${tableName}': ${error.message}`);
         this.logger.debug(`Error:`, error);
       }
     }
@@ -128,64 +129,39 @@ export class DefaultDataService {
 
   private async insertAllDefaultRecordsMongo(): Promise<void> {
     this.logger.log('🍃 MongoDB: Inserting default data with processors...');
-    
+
+    const db = this.queryBuilder.getMongoDb();
     let totalCreated = 0;
+    let totalSkipped = 0;
 
     for (const [collectionName, rawRecords] of Object.entries(initJson)) {
       if (!rawRecords || (Array.isArray(rawRecords) && rawRecords.length === 0)) {
         continue;
       }
 
-      this.logger.log(`🔄 Processing collection '${collectionName}'...`);
+      this.logger.log(`Processing '${collectionName}'...`);
 
       try {
-        // Check if collection already has data
-        const count = await this.queryBuilder.count({ table: collectionName });
-        if (count > 0) {
-          this.logger.log(`⏩ '${collectionName}' already has ${count} records, skipping`);
-          continue;
-        }
-
-        // Get processor (same as SQL flow)
         const processor = this.processors.get(collectionName);
         if (!processor) {
-          this.logger.warn(`⚠️ No processor found for '${collectionName}', skipping.`);
+          this.logger.warn(`No processor found for '${collectionName}', skipping.`);
           continue;
         }
 
         const records = Array.isArray(rawRecords) ? rawRecords : [rawRecords];
-        
-        // Special handling for menu_definition (needs ordered processing)
-        if (collectionName === 'menu_definition' && typeof processor['processMongo'] === 'function') {
-          const created = await processor['processMongo'](records, collectionName);
-          totalCreated += created;
-          this.logger.log(`✅ '${collectionName}': ${created} created`);
-          continue;
-        }
-        
-        // Transform records using processor
-        const transformedRecords = await processor.transformRecords(records);
-        const validRecords = transformedRecords.filter(r => r !== null);
 
-        if (validRecords.length === 0) {
-          this.logger.log(`⏩ '${collectionName}': No valid records after transformation`);
-          continue;
-        }
+        const result = await processor.processMongo(records, db, collectionName, { db });
 
-        // Insert transformed records
-        await this.queryBuilder.insert({
-          table: collectionName,
-          data: validRecords,
-        });
-        totalCreated += validRecords.length;
-        
-        this.logger.log(`✅ '${collectionName}': ${validRecords.length} created`);
+        totalCreated += result.created;
+        totalSkipped += result.skipped;
+
+        this.logger.log(`'${collectionName}': ${result.created} created, ${result.skipped} skipped`);
       } catch (error) {
-        this.logger.error(`❌ Error processing '${collectionName}': ${error.message}`);
+        this.logger.error(`Error processing '${collectionName}': ${error.message}`);
       }
     }
 
-    this.logger.log(`🎉 MongoDB default data completed! Total: ${totalCreated} created`);
+    this.logger.log(`🎉 MongoDB default data completed! Total: ${totalCreated} created, ${totalSkipped} skipped`);
   }
 
   private async insertAndGetId(

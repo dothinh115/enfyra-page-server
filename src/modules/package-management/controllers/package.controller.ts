@@ -93,10 +93,10 @@ export class PackageController {
         );
       }
 
-      // Test require the package before saving to ensure it's properly installed
+      // Verify package is properly installed before saving
       try {
         require(body.name);
-        this.logger.log(`✅ Package "${body.name}" successfully required`);
+        this.logger.log(`Package "${body.name}" successfully required`);
       } catch (requireError) {
         throw new ValidationException(
           `Package registration failed - unable to require: ${requireError.message}. The package may not be properly installed.`,
@@ -108,7 +108,7 @@ export class PackageController {
         ...body,
         version: installationResult.version,
         description: body.description || installationResult.description || '',
-        isSystem: isAlreadyInstalled ? 1 : 0,
+        isSystem: isAlreadyInstalled ? true : false,
       });
 
       // Reload package cache after creation

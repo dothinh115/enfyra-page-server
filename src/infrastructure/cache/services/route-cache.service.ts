@@ -9,7 +9,6 @@ import {
   ROUTE_RELOAD_LOCK_KEY,
   REDIS_TTL,
 } from '../../../shared/utils/constant';
-import { getForeignKeyColumnName, getJunctionTableName } from '../../knex/utils/naming-helpers';
 import { EnfyraRouteEngine } from '../../../shared/utils/enfyra-route-engine';
 
 @Injectable()
@@ -36,7 +35,7 @@ export class RouteCacheService implements OnModuleInit, OnApplicationBootstrap {
   }
 
   async onApplicationBootstrap() {
-    // IMPORTANT: Check if system tables exist before loading routes
+    // Check if system tables exist before loading routes
     // Even if metadata loads successfully, system tables may not exist yet
     await this.metadataCacheService.getMetadata();
 
@@ -69,14 +68,14 @@ export class RouteCacheService implements OnModuleInit, OnApplicationBootstrap {
             return;
           }
 
-          this.logger.log(`📥 Received route cache sync from instance ${payload.instanceId.slice(0, 8)}...`);
+          this.logger.log(`Received route cache sync from instance ${payload.instanceId.slice(0, 8)}...`);
 
           this.routesCache = payload.routes;
           this.allMethods = payload.methods || [];
           this.buildRouteEngine(this.routesCache);
 
           this.cacheLoaded = true;
-          this.logger.log(`✅ Route cache synced: ${payload.routes.length} routes, ${this.allMethods.length} methods`);
+          this.logger.log(`Route cache synced: ${payload.routes.length} routes, ${this.allMethods.length} methods`);
         } catch (error) {
           this.logger.error('Failed to parse route cache sync message:', error);
         }
@@ -114,18 +113,18 @@ export class RouteCacheService implements OnModuleInit, OnApplicationBootstrap {
       );
 
       if (!acquired) {
-        this.logger.log('🔒 Another instance is reloading routes, waiting for broadcast...');
+        this.logger.log('Another instance is reloading routes, waiting for broadcast...');
         return;
       }
 
-      this.logger.log(`🔓 Acquired route reload lock (instance ${instanceId.slice(0, 8)})`);
+      this.logger.log(`Acquired route reload lock (instance ${instanceId.slice(0, 8)})`);
 
       try {
         const start = Date.now();
-        this.logger.log('🔄 Reloading routes cache...');
+        this.logger.log('Reloading routes cache...');
 
         const routes = await this.loadRoutes();
-        this.logger.log(`✅ Loaded ${routes.length} routes in ${Date.now() - start}ms`);
+        this.logger.log(`Loaded ${routes.length} routes in ${Date.now() - start}ms`);
 
         this.routesCache = routes;
         await this.publish(routes);
@@ -134,10 +133,10 @@ export class RouteCacheService implements OnModuleInit, OnApplicationBootstrap {
         this.cacheLoaded = true;
       } finally {
         await this.cacheService.release(ROUTE_RELOAD_LOCK_KEY, instanceId);
-        this.logger.log('🔓 Released route reload lock');
+        this.logger.log('Released route reload lock');
       }
     } catch (error) {
-      this.logger.error('❌ Failed to reload route cache:', error);
+      this.logger.error('Failed to reload route cache:', error);
       throw error;
     }
   }
@@ -156,7 +155,7 @@ export class RouteCacheService implements OnModuleInit, OnApplicationBootstrap {
         JSON.stringify(payload),
       );
 
-      this.logger.log(`📤 Published route cache to other instances (${routes.length} routes, ${this.allMethods.length} methods)`);
+      this.logger.log(`Published route cache to other instances (${routes.length} routes, ${this.allMethods.length} methods)`);
     } catch (error) {
       this.logger.error('Failed to publish route cache sync:', error);
     }
@@ -169,7 +168,7 @@ export class RouteCacheService implements OnModuleInit, OnApplicationBootstrap {
         tableName: 'method_definition',
       });
       this.allMethods = methodsResult.data.map((m: any) => m.method);
-      this.logger.log(`📋 Loaded ${this.allMethods.length} methods: [${this.allMethods.join(', ')}]`);
+      this.logger.log(`Loaded ${this.allMethods.length} methods: [${this.allMethods.join(', ')}]`);
     }
 
     const result = await this.queryBuilder.select({
@@ -190,7 +189,6 @@ export class RouteCacheService implements OnModuleInit, OnApplicationBootstrap {
     });
     const routes = result.data;
 
-    // Get global hooks separately
     const globalHooksResult = await this.queryBuilder.select({
       tableName: 'hook_definition',
       filter: {
@@ -202,13 +200,16 @@ export class RouteCacheService implements OnModuleInit, OnApplicationBootstrap {
     });
     const globalHooks = globalHooksResult.data;
 
-    // Merge global hooks with route hooks (remove duplicates by id)
     for (const route of routes) {
       const allHooks = [...globalHooks, ...(route.hooks || [])];
 
-      // Remove duplicate hooks by id
+      const isMongoDB = this.queryBuilder.isMongoDb();
       const uniqueHooks = allHooks.filter((hook, index, self) =>
-        index === self.findIndex((h) => h.id === hook.id)
+        index === self.findIndex((h) => {
+          const hId = isMongoDB ? h._id?.toString() : h.id;
+          const hookId = isMongoDB ? hook._id?.toString() : hook.id;
+          return hId === hookId;
+        })
       );
 
       route.hooks = uniqueHooks;
@@ -233,13 +234,14 @@ export class RouteCacheService implements OnModuleInit, OnApplicationBootstrap {
 
     const stats = this.routeEngine.getStats();
     this.logger.log(
-      `⚡ Built Enfyra Route Engine: ${stats.totalRoutes} route entries from ${insertedCount} route definitions across methods [${stats.methods.join(', ')}] in ${Date.now() - startTime}ms`
+      `Built Enfyra Route Engine: ${stats.totalRoutes} route entries from ${insertedCount} route definitions across methods [${stats.methods.join(', ')}] in ${Date.now() - startTime}ms`
     );
   }
 
   private insertRouteToEngine(route: any): void {
     if (!route.path) {
-      this.logger.warn(`⚠️ Route has no path, skipping:`, route.id);
+      this.logger.warn(`Route has no path, skipping:`);
+      this.logger.warn(JSON.stringify(route, null, 2));
       return;
     }
 

@@ -49,7 +49,6 @@ export class SqlTableHandlerService {
     const allColumnNames = new Set<string>();
     const duplicates: string[] = [];
 
-    // 1. Add explicit columns
     for (const col of columns || []) {
       if (allColumnNames.has(col.name)) {
         duplicates.push(col.name);
@@ -57,7 +56,6 @@ export class SqlTableHandlerService {
       allColumnNames.add(col.name);
     }
 
-    // 2. Add FK columns from M2O and O2O relations
     for (const rel of relations || []) {
       if (['many-to-one', 'one-to-one'].includes(rel.type)) {
         const fkColumn = `${rel.propertyName}Id`;
@@ -68,7 +66,6 @@ export class SqlTableHandlerService {
       }
     }
 
-    // 3. Check M2M junction table columns for duplicates (validation only - actual names calculated in getJunctionColumnNames)
     for (const rel of relations || []) {
       if (rel.type === 'many-to-many') {
         const targetTableId = typeof rel.targetTable === 'object' ? rel.targetTable.id : rel.targetTable;
@@ -95,7 +92,6 @@ export class SqlTableHandlerService {
       }
     }
 
-    // 4. Throw error if duplicates found
     if (duplicates.length > 0) {
       throw new ValidationException(
         `Duplicate column names detected in table '${tableName}': ${duplicates.join(', ')}`,
@@ -109,14 +105,7 @@ export class SqlTableHandlerService {
   }
 
   async createTable(body: any) {
-    this.logger.log(`\n${'='.repeat(80)}`);
-    this.logger.log(`📝 CREATE TABLE: ${body?.name}`);
-    this.logger.log(`${'='.repeat(80)}`);
-    this.logger.log(`📋 Input Data:`);
-    this.logger.log(`   - Columns: ${body.columns?.length || 0}`);
-    this.logger.log(`   - Relations: ${body.relations?.length || 0}`);
-    this.logger.log(`   - Columns: ${body.columns?.map((c: any) => c.name).join(', ')}`);
-    this.logger.log(`   - Relations: ${body.relations?.map((r: any) => `${r.propertyName} (${r.type})`).join(', ')}`);
+    this.logger.log(`CREATE TABLE: ${body?.name} (${body.columns?.length || 0} columns, ${body.relations?.length || 0} relations)`);
 
     if (/[A-Z]/.test(body?.name)) {
       throw new ValidationException('Table name must be lowercase (no uppercase letters).', {
@@ -135,8 +124,6 @@ export class SqlTableHandlerService {
     let trx;
 
     try {
-      this.logger.log(`\n🔄 Starting transaction...`);
-      // Start transaction
       trx = await knex.transaction();
 
       const hasTable = await knex.schema.hasTable(body.name);
@@ -218,19 +205,21 @@ export class SqlTableHandlerService {
 
       body.isSystem = false;
 
-      this.logger.log(`\n💾 Saving table metadata to DB...`);
-      const [tableId] = await trx('table_definition').insert({
+      this.logger.log(`\nSaving table metadata to DB...`);
+      const dbType = this.queryBuilder.getDatabaseType();
+      const insertResult = await trx('table_definition').insert({
         name: body.name,
         isSystem: body.isSystem,
         alias: body.alias,
         description: body.description,
         uniques: JSON.stringify(body.uniques || []),
         indexes: JSON.stringify(body.indexes || []),
-      });
-      this.logger.log(`   ✅ Table metadata saved (ID: ${tableId})`);
+      }, dbType === 'postgres' ? ['id'] : undefined);
+      const tableId = dbType === 'postgres' ? insertResult[0]?.id : insertResult[0];
+      this.logger.log(`   Table metadata saved (ID: ${tableId})`);
 
       if (body.columns?.length > 0) {
-        this.logger.log(`\n💾 Saving ${body.columns.length} column(s) metadata...`);
+        this.logger.log(`\nSaving ${body.columns.length} column(s) metadata...`);
         const columnsToInsert = body.columns.map((col: any) => ({
           name: col.name,
           type: col.type,
@@ -247,11 +236,11 @@ export class SqlTableHandlerService {
           tableId: tableId,
         }));
         await trx('column_definition').insert(columnsToInsert);
-        this.logger.log(`   ✅ Column metadata saved`);
+        this.logger.log(`   Column metadata saved`);
       }
 
       if (body.relations?.length > 0) {
-        this.logger.log(`\n💾 Saving ${body.relations.length} relation(s) metadata...`);
+        this.logger.log(`\nSaving ${body.relations.length} relation(s) metadata...`);
         // Load all target tables at once (avoid N+1)
         const targetTableIds = body.relations
           .map((rel: any) => typeof rel.targetTable === 'object' ? rel.targetTable.id : rel.targetTable)
@@ -296,7 +285,7 @@ export class SqlTableHandlerService {
             const junctionTableName = getJunctionTableName(body.name, rel.propertyName, targetTableName);
             const { sourceColumn, targetColumn } = getJunctionColumnNames(body.name, rel.propertyName, targetTableName);
 
-            this.logger.log(`   📝 M2M: ${rel.propertyName} → ${targetTableName}`);
+            this.logger.log(`   M2M: ${rel.propertyName} → ${targetTableName}`);
             this.logger.log(`      Junction table: ${junctionTableName}`);
             this.logger.log(`      Columns: ${sourceColumn}, ${targetColumn}`);
 
@@ -315,7 +304,7 @@ export class SqlTableHandlerService {
         }
         
         await trx('relation_definition').insert(relationsToInsert);
-        this.logger.log(`   ✅ Relation metadata saved`);
+        this.logger.log(`   Relation metadata saved`);
       }
 
       this.logger.log(`\n🔧 Running physical schema migration...`);
@@ -332,25 +321,25 @@ export class SqlTableHandlerService {
           isSystem: false,
           icon: 'lucide:table',
         });
-        this.logger.log(`✅ Route /${body.name} created for table ${body.name}`);
+        this.logger.log(`Route /${body.name} created for table ${body.name}`);
       } else {
         this.logger.warn(`Route /${body.name} already exists, skipping route creation`);
       }
 
       // Fetch full table metadata with columns and relations (before physical migration)
-      this.logger.log(`📥 Fetching full table metadata...`);
+      this.logger.log(`Fetching full table metadata...`);
       const fullMetadata = await this.getFullTableMetadataInTransaction(trx, tableId);
 
       // Migrate physical schema INSIDE transaction (before commit)
-      this.logger.log(`🔨 Calling SqlSchemaMigrationService.createTable()...`);
+      this.logger.log(`Calling SqlSchemaMigrationService.createTable()...`);
       await this.schemaMigrationService.createTable(fullMetadata);
 
       // Commit transaction AFTER physical schema migration succeeds
-      this.logger.log(`\n✅ Committing transaction...`);
+      this.logger.log(`\nCommitting transaction...`);
       await trx.commit();
 
       this.logger.log(`\n${'='.repeat(80)}`);
-      this.logger.log(`✅ TABLE CREATED SUCCESSFULLY: ${body.name}`);
+      this.logger.log(`TABLE CREATED SUCCESSFULLY: ${body.name}`);
       this.logger.log(`   - Metadata saved to DB`);
       this.logger.log(`   - Physical schema migrated`);
       this.logger.log(`   - Route created`);
@@ -585,13 +574,13 @@ export class SqlTableHandlerService {
         const oldMetadata = await this.metadataCacheService.lookupTableByName(exists.name);
 
         // Create new metadata from request body (before database update)
-        // IMPORTANT: Preserve inverse relations (relations not owned by this table)
+        // Preserve inverse relations (relations not owned by this table)
         // Frontend doesn't always send inverse relations, so we need to preserve them
         const preserveInverseRelations = (oldRels: any[] = [], newRels: any[] = []) => {
           // Filter inverse relations using isInverse flag (set by metadata cache)
           const inverseRels = (oldRels || []).filter(r => r.isInverse === true);
 
-          this.logger.log(`🔍 Preserving ${inverseRels.length} inverse relations: ${inverseRels.map(r => r.propertyName).join(', ')}`);
+          this.logger.log(`Preserving ${inverseRels.length} inverse relations: ${inverseRels.map(r => r.propertyName).join(', ')}`);
 
           // Merge: keep inverse relations from old + new relations from request
           const newRelIds = new Set(newRels.map(r => r.id).filter(id => id != null));
@@ -617,7 +606,7 @@ export class SqlTableHandlerService {
           await this.schemaMigrationService.updateTable(exists.name, oldMetadata, newMetadata);
         }
 
-        this.logger.log(`✅ Table updated: ${exists.name} (metadata + physical schema)`);
+        this.logger.log(`Table updated: ${exists.name} (metadata + physical schema)`);
         
         // Return the table object with id for consistency with other methods
         return {
@@ -675,7 +664,7 @@ export class SqlTableHandlerService {
         const deletedRoutes = await trx('route_definition')
           .where({ mainTableId: id })
           .delete();
-        this.logger.log(`🗑️ Deleted ${deletedRoutes} routes with mainTableId = ${id}`);
+        this.logger.log(`Deleted ${deletedRoutes} routes with mainTableId = ${id}`);
         
         // Delete M2M relations in junction table (route_definition_targetTables_table_definition)
         const junctionTableName = 'route_definition_targetTables_table_definition';
@@ -685,24 +674,23 @@ export class SqlTableHandlerService {
           await trx(junctionTableName)
             .where({ [fkColumn]: id })
             .delete();
-          this.logger.log(`🗑️ Deleted junction records for table ${id}`);
+          this.logger.log(`Deleted junction records for table ${id}`);
         }
 
-        // IMPORTANT: Fetch relations BEFORE deleting them (needed for junction table cleanup)
+        // Fetch relations BEFORE deleting them (needed for junction table cleanup)
         // 1. Fetch all relations involving this table (for physical migration later)
         const allRelations = await trx('relation_definition')
           .where({ sourceTableId: id })
           .orWhere({ targetTableId: id })
           .select('*');
 
-        this.logger.log(`🗑️ Found ${allRelations.length} relations involving table ${tableName}`);
+        this.logger.log(`Found ${allRelations.length} relations involving table ${tableName}`);
 
-        // 2. Fetch target relations (needed for FK column cleanup)
         const targetRelations = await trx('relation_definition')
           .where({ targetTableId: id })
           .select('*');
 
-        this.logger.log(`🗑️ Found ${targetRelations.length} target relations for table ${tableName}`);
+        this.logger.log(`Found ${targetRelations.length} target relations for table ${tableName}`);
 
         // Drop FK columns from source tables before deleting relations
         for (const rel of targetRelations) {
@@ -710,81 +698,120 @@ export class SqlTableHandlerService {
             const sourceTable = await trx('table_definition')
               .where({ id: rel.sourceTableId })
               .first();
-            
+
             if (sourceTable) {
               const { getForeignKeyColumnName } = await import('../../../infrastructure/knex/utils/naming-helpers');
               const fkColumn = getForeignKeyColumnName(tableName); // FK column name in source table
-              
-              this.logger.log(`🗑️ Dropping FK column ${fkColumn} from table ${sourceTable.name}`);
-              
+
+              this.logger.log(`Dropping FK column ${fkColumn} from table ${sourceTable.name}`);
+
               // Check if column exists before dropping
               const columnExists = await trx.schema.hasColumn(sourceTable.name, fkColumn);
               if (columnExists) {
-                // Drop FK constraint first
+                // Drop FK constraint and column using schema builder (database-agnostic)
                 try {
-                  const fkConstraints = await trx.raw(`
-                    SELECT CONSTRAINT_NAME 
-                    FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE 
-                    WHERE TABLE_SCHEMA = DATABASE() 
-                    AND TABLE_NAME = ? 
-                    AND COLUMN_NAME = ? 
-                    AND REFERENCED_TABLE_NAME IS NOT NULL
-                  `, [sourceTable.name, fkColumn]);
-                  
-                  if (fkConstraints[0] && fkConstraints[0].length > 0) {
-                    const actualFkName = fkConstraints[0][0].CONSTRAINT_NAME;
-                    await trx.raw(`ALTER TABLE \`${sourceTable.name}\` DROP FOREIGN KEY \`${actualFkName}\``);
-                    this.logger.log(`🗑️ Dropped FK constraint: ${actualFkName}`);
-                  }
+                  await trx.schema.alterTable(sourceTable.name, (table) => {
+                    table.dropForeign([fkColumn]);
+                  });
+                  this.logger.log(`Dropped FK constraint for column: ${fkColumn}`);
                 } catch (error) {
-                  this.logger.log(`⚠️ Error dropping FK constraint: ${error.message}`);
+                  this.logger.log(`Error dropping FK constraint: ${error.message}`);
                 }
-                
-                // Drop FK column
-                await trx.raw(`ALTER TABLE \`${sourceTable.name}\` DROP COLUMN \`${fkColumn}\``);
-                this.logger.log(`🗑️ Dropped FK column: ${fkColumn} from ${sourceTable.name}`);
+
+                try {
+                  await trx.schema.alterTable(sourceTable.name, (table) => {
+                    table.dropColumn(fkColumn);
+                  });
+                  this.logger.log(`Dropped FK column: ${fkColumn} from ${sourceTable.name}`);
+                } catch (error) {
+                  this.logger.log(`Error dropping FK column: ${error.message}`);
+                }
               }
             }
           }
         }
 
-        // 4. CRITICAL: Drop ALL FK constraints referencing this table (from actual DB schema)
-        // This handles cases where FK columns exist but metadata is missing
-        this.logger.log(`🗑️ Checking for ALL FK constraints referencing table ${tableName}...`);
-        
+        this.logger.log(`Checking for ALL FK constraints referencing table ${tableName}...`);
+
         try {
-          const allFkConstraints = await trx.raw(`
-            SELECT 
-              TABLE_NAME,
-              COLUMN_NAME,
-              CONSTRAINT_NAME,
-              REFERENCED_TABLE_NAME,
-              REFERENCED_COLUMN_NAME
-            FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE 
-            WHERE TABLE_SCHEMA = DATABASE() 
-            AND REFERENCED_TABLE_NAME = ?
-            AND REFERENCED_COLUMN_NAME IS NOT NULL
-          `, [tableName]);
-          
-          if (allFkConstraints[0] && allFkConstraints[0].length > 0) {
-            this.logger.log(`🗑️ Found ${allFkConstraints[0].length} FK constraints referencing ${tableName}`);
-            
-            for (const fk of allFkConstraints[0]) {
-              this.logger.log(`🗑️ Dropping FK constraint: ${fk.CONSTRAINT_NAME} from ${fk.TABLE_NAME}.${fk.COLUMN_NAME}`);
-              
-              // Drop FK constraint
-              await trx.raw(`ALTER TABLE \`${fk.TABLE_NAME}\` DROP FOREIGN KEY \`${fk.CONSTRAINT_NAME}\``);
-              this.logger.log(`🗑️ Dropped FK constraint: ${fk.CONSTRAINT_NAME}`);
-              
-              // Drop FK column
-              await trx.raw(`ALTER TABLE \`${fk.TABLE_NAME}\` DROP COLUMN \`${fk.COLUMN_NAME}\``);
-              this.logger.log(`🗑️ Dropped FK column: ${fk.COLUMN_NAME} from ${fk.TABLE_NAME}`);
+          const dbType = this.queryBuilder.getDatabaseType();
+          let allFkConstraints;
+
+          if (dbType === 'postgres') {
+            // PostgreSQL query for FK constraints
+            // Use lowercase column names in result to avoid case sensitivity issues
+            const result = await trx.raw(`
+              SELECT
+                tc.table_name,
+                kcu.column_name,
+                tc.constraint_name,
+                ccu.table_name AS referenced_table_name,
+                ccu.column_name AS referenced_column_name
+              FROM information_schema.table_constraints AS tc
+              JOIN information_schema.key_column_usage AS kcu
+                ON tc.constraint_name = kcu.constraint_name
+                AND tc.table_schema = kcu.table_schema
+              JOIN information_schema.constraint_column_usage AS ccu
+                ON ccu.constraint_name = tc.constraint_name
+                AND ccu.table_schema = tc.table_schema
+              WHERE tc.constraint_type = 'FOREIGN KEY'
+                AND tc.table_schema = 'public'
+                AND ccu.table_name = ?
+            `, [tableName]);
+
+            // PostgreSQL returns lowercase column names by default
+            allFkConstraints = result.rows || [];
+          } else {
+            // MySQL query for FK constraints
+            const result = await trx.raw(`
+              SELECT
+                TABLE_NAME as table_name,
+                COLUMN_NAME as column_name,
+                CONSTRAINT_NAME as constraint_name,
+                REFERENCED_TABLE_NAME as referenced_table_name,
+                REFERENCED_COLUMN_NAME as referenced_column_name
+              FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+              WHERE TABLE_SCHEMA = DATABASE()
+              AND REFERENCED_TABLE_NAME = ?
+              AND REFERENCED_COLUMN_NAME IS NOT NULL
+            `, [tableName]);
+
+            allFkConstraints = result[0] || [];
+          }
+
+          if (allFkConstraints && allFkConstraints.length > 0) {
+            this.logger.log(`Found ${allFkConstraints.length} FK constraints referencing ${tableName}`);
+
+            for (const fk of allFkConstraints) {
+              this.logger.log(`Dropping FK constraint: ${fk.constraint_name} from ${fk.table_name}.${fk.column_name}`);
+
+              try {
+                // Drop FK constraint using schema builder (database-agnostic)
+                await trx.schema.alterTable(fk.table_name, (table: any) => {
+                  table.dropForeign([fk.column_name]);
+                });
+                this.logger.log(`Dropped FK constraint: ${fk.constraint_name}`);
+              } catch (error) {
+                this.logger.log(`Error dropping FK constraint: ${error.message}`);
+                // Don't rethrow - continue with other constraints
+              }
+
+              try {
+                // Drop FK column using schema builder (database-agnostic)
+                await trx.schema.alterTable(fk.table_name, (table: any) => {
+                  table.dropColumn(fk.column_name);
+                });
+                this.logger.log(`Dropped FK column: ${fk.column_name} from ${fk.table_name}`);
+              } catch (error) {
+                this.logger.log(`Error dropping FK column: ${error.message}`);
+                // Don't rethrow - continue with other constraints
+              }
             }
           } else {
-            this.logger.log(`🗑️ No FK constraints found referencing ${tableName}`);
+            this.logger.log(`No FK constraints found referencing ${tableName}`);
           }
         } catch (error) {
-          this.logger.log(`⚠️ Error checking FK constraints: ${error.message}`);
+          this.logger.log(`Error checking FK constraints: ${error.message}`);
         }
 
         // Now delete ALL relations metadata (both source and target)
@@ -792,9 +819,8 @@ export class SqlTableHandlerService {
           .where({ sourceTableId: id })
           .orWhere({ targetTableId: id })
           .delete();
-        this.logger.log(`🗑️ Deleted all relations for table ${id}`);
+        this.logger.log(`Deleted all relations for table ${id}`);
 
-        // 5. Delete columns
         await trx('column_definition')
           .where({ tableId: id })
           .delete();
@@ -805,19 +831,20 @@ export class SqlTableHandlerService {
 
         // Drop physical table and junction tables INSIDE transaction (before commit)
         // Pass relations so schema migration can drop M2M junction tables
-        await this.schemaMigrationService.dropTable(tableName, allRelations);
+        // Pass transaction to avoid issues with transaction isolation
+        await this.schemaMigrationService.dropTable(tableName, allRelations, trx);
 
         // Commit transaction AFTER physical schema migration succeeds
         await trx.commit();
 
-        this.logger.log(`✅ Table deleted: ${tableName} (metadata + physical schema)`);
+        this.logger.log(`Table deleted: ${tableName} (metadata + physical schema)`);
         return exists;
       } catch (error) {
         // Rollback transaction on error (if not already committed)
         if (trx && !trx.isCompleted()) {
           try {
             await trx.rollback();
-            this.logger.log(`🔄 Transaction rolled back due to error`);
+            this.logger.log(`Transaction rolled back due to error`);
           } catch (rollbackError) {
             this.logger.error(`Failed to rollback transaction: ${rollbackError.message}`);
           }

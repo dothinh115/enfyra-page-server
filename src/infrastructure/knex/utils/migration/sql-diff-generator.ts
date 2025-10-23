@@ -57,8 +57,17 @@ export async function generateSQLFromDiff(
       } else {
         // NULLABLE columns: Skip FK constraint to avoid errors with existing NULL data
         // User should populate data first, then add FK constraint manually if needed
-        logger.log(`  ⏭️  Skipping FK constraint for nullable column ${col.name} - user must populate data first`);
+        logger.log(`  Skipping FK constraint for nullable column ${col.name} - user must populate data first`);
       }
+    }
+
+    // Add UNIQUE constraint for O2O relations
+    if (col.isUnique) {
+      const uniqueConstraintName = `uq_${tableName}_${col.name}`;
+      sqlStatements.push(
+        `ALTER TABLE ${qt(tableName)} ADD CONSTRAINT ${qt(uniqueConstraintName)} UNIQUE (${qt(col.name)})`
+      );
+      logger.log(`  Added UNIQUE constraint on ${col.name} for one-to-one relation`);
     }
   }
 
@@ -67,12 +76,12 @@ export async function generateSQLFromDiff(
     const colName = update.newColumn.name;
 
     if (renamedColumns.has(colName)) {
-      logger.log(`  ⏭️  Skipping MODIFY for ${colName} - column was renamed`);
+      logger.log(`  Skipping MODIFY for ${colName} - column was renamed`);
       continue;
     }
 
     if (processedUpdates.has(colName)) {
-      logger.log(`  ⏭️  Skipping duplicate MODIFY for ${colName}`);
+      logger.log(`  Skipping duplicate MODIFY for ${colName}`);
       continue;
     }
 
@@ -81,6 +90,15 @@ export async function generateSQLFromDiff(
     sqlStatements.push(generateModifyColumnSQL(tableName, update.newColumn.name, columnDef, dbType));
   }
 
+  // Handle UNIQUE constraint CREATE
+  for (const uniqueGroup of diff.constraints.uniques.create || []) {
+    const columns = uniqueGroup.map((col: string) => qt(col)).join(', ');
+    const constraintName = `uq_${tableName}_${uniqueGroup.join('_')}`;
+    sqlStatements.push(`ALTER TABLE ${qt(tableName)} ADD CONSTRAINT ${qt(constraintName)} UNIQUE (${columns})`);
+    logger.log(`  Added UNIQUE constraint ${constraintName} on (${uniqueGroup.join(', ')})`);
+  }
+
+  // Handle UNIQUE constraint UPDATE (should be same as CREATE for now)
   for (const uniqueGroup of diff.constraints.uniques.update || []) {
     const columns = uniqueGroup.map((col: string) => qt(col)).join(', ');
     sqlStatements.push(`ALTER TABLE ${qt(tableName)} ADD UNIQUE (${columns})`);
@@ -113,7 +131,7 @@ export async function generateSQLFromDiff(
   // Junction table RENAME should execute before CREATE/DROP to avoid conflicts
   for (const junctionRename of diff.junctionTables?.rename || []) {
     const { oldTableName, newTableName } = junctionRename;
-    logger.log(`🔄 Renaming junction table: ${oldTableName} → ${newTableName}`);
+    logger.log(`Renaming junction table: ${oldTableName} → ${newTableName}`);
     sqlStatements.push(generateRenameTableSQL(oldTableName, newTableName, dbType));
   }
 
@@ -122,7 +140,7 @@ export async function generateSQLFromDiff(
 
     const tableExists = await knex.schema.hasTable(junctionName);
     if (tableExists) {
-      logger.log(`  ⏭️  Junction table ${junctionName} already exists, skipping`);
+      logger.log(`  Junction table ${junctionName} already exists, skipping`);
       continue;
     }
 
@@ -175,18 +193,87 @@ export async function generateSQLFromDiff(
   return sqlStatements;
 }
 
+/**
+ * Generate batch SQL from multiple statements
+ * @returns Single SQL string with all statements separated by semicolons
+ */
+export function generateBatchSQL(sqlStatements: string[]): string {
+  if (sqlStatements.length === 0) {
+    return '';
+  }
+
+  // Join all SQL statements with semicolon
+  const batchSQL = sqlStatements.join(';\n') + ';';
+
+  logger.log(`📦 Generated batch SQL with ${sqlStatements.length} statement(s):`);
+  sqlStatements.forEach((sql, i) => {
+    logger.log(`  [${i+1}/${sqlStatements.length}] ${sql.substring(0, 80)}${sql.length > 80 ? '...' : ''}`);
+  });
+
+  return batchSQL;
+}
+
+/**
+ * Execute batch SQL with transaction support
+ * @param knex - Knex instance
+ * @param batchSQL - SQL string with multiple statements separated by semicolons
+ * @param dbType - Database type (mysql, postgres, sqlite)
+ */
+export async function executeBatchSQL(
+  knex: Knex,
+  batchSQL: string,
+  dbType?: 'mysql' | 'postgres' | 'sqlite',
+): Promise<void> {
+  if (!batchSQL || batchSQL.trim() === '' || batchSQL.trim() === ';') {
+    logger.log('No SQL to execute (empty batch)');
+    return;
+  }
+
+  // Detect DB type if not provided
+  const detectedDbType = dbType || (knex.client.config.client as string);
+  const isPostgres = detectedDbType.includes('pg') || detectedDbType.includes('postgres');
+
+  if (isPostgres) {
+    logger.log(`Executing batch SQL with TRANSACTION (PostgreSQL)...`);
+
+    // PostgreSQL: Use transaction for atomic DDL
+    try {
+      await knex.transaction(async (trx) => {
+        await trx.raw(batchSQL);
+      });
+      logger.log(`Batch SQL executed successfully (transaction committed)`);
+    } catch (error) {
+      logger.error(`Batch SQL execution failed (transaction rolled back)`);
+      logger.error(`Error: ${error.message}`);
+      logger.error(`Failed SQL:\n${batchSQL.substring(0, 500)}${batchSQL.length > 500 ? '...' : ''}`);
+      throw error;
+    }
+  } else {
+    logger.log(`Executing batch SQL (${detectedDbType})...`);
+    logger.warn(`${detectedDbType.toUpperCase()} does not support transactional DDL - changes cannot be rolled back`);
+
+    // MySQL/SQLite: Execute batch without transaction
+    try {
+      await knex.raw(batchSQL);
+      logger.log(`Batch SQL executed successfully`);
+    } catch (error) {
+      logger.error(`Batch SQL execution failed`);
+      logger.error(`Some statements may have been executed before failure - manual recovery may be required`);
+      logger.error(`Error: ${error.message}`);
+      logger.error(`Failed SQL:\n${batchSQL.substring(0, 500)}${batchSQL.length > 500 ? '...' : ''}`);
+      throw error;
+    }
+  }
+}
+
+/**
+ * Legacy function - Generate statements array and execute as batch
+ * @deprecated Use generateBatchSQL + executeBatchSQL for better control
+ */
 export async function executeSQLStatements(
   knex: Knex,
   sqlStatements: string[],
 ): Promise<void> {
-  for (const sql of sqlStatements) {
-    logger.log(`📝 Executing SQL: ${sql.substring(0, 100)}${sql.length > 100 ? '...' : ''}`);
-    try {
-      await knex.raw(sql);
-    } catch (error) {
-      logger.error(`❌ Failed to execute SQL: ${sql}`);
-      logger.error(`Error: ${error.message}`);
-      throw error;
-    }
-  }
+  const batchSQL = generateBatchSQL(sqlStatements);
+  await executeBatchSQL(knex, batchSQL);
 }

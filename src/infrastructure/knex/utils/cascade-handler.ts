@@ -17,13 +17,13 @@ export class CascadeHandler {
   async handleCascadeRelations(tableName: string, recordId: any, cascadeContextMap: Map<string, any>): Promise<void> {
     const contextData = cascadeContextMap.get(tableName);
     if (!contextData) {
-      this.logger.log(`⚠️ [handleCascadeRelations] No context for table: ${tableName}`);
+      this.logger.log(`[handleCascadeRelations] No context for table: ${tableName}`);
       return;
     }
 
     const originalRelationData = contextData.relationData || contextData;
 
-    this.logger.log(`🔍 [handleCascadeRelations] Table: ${tableName}, RecordId: ${recordId}, Relation keys: ${Object.keys(originalRelationData).join(', ')}`);
+    this.logger.log(`[handleCascadeRelations] Table: ${tableName}, RecordId: ${recordId}, Relation keys: ${Object.keys(originalRelationData).join(', ')}`);
 
     const metadata = await this.metadataCacheService.getMetadata();
     const tableMetadata = metadata.tables?.get?.(tableName) || metadata.tablesList?.find((t: any) => t.name === tableName);
@@ -34,7 +34,18 @@ export class CascadeHandler {
       return;
     }
 
-    for (const relation of tableMetadata.relations) {
+    // Ensure relations is an array (defensive check for PostgreSQL compatibility)
+    const relations = Array.isArray(tableMetadata.relations)
+      ? tableMetadata.relations
+      : Object.values(tableMetadata.relations || {});
+
+    if (relations.length === 0) {
+      this.logger.log(`   No relations to process`);
+      cascadeContextMap.delete(tableName);
+      return;
+    }
+
+    for (const relation of relations) {
       const relName = relation.propertyName;
 
       if (!(relName in originalRelationData)) {
@@ -78,7 +89,7 @@ export class CascadeHandler {
           }));
 
           await this.knexInstance(junctionTable).insert(junctionRecords);
-          this.logger.log(`     ✅ Synced ${junctionRecords.length} M2M junction records`);
+          this.logger.log(`     Synced ${junctionRecords.length} M2M junction records`);
         }
 
       } else if (relation.type === 'one-to-many') {
@@ -145,7 +156,7 @@ export class CascadeHandler {
           }
         }
 
-        this.logger.log(`     ✅ O2M complete: ${idsToRemove.length} removed (FK=NULL), ${updateCount} updated, ${createCount} created`);
+        this.logger.log(`     O2M complete: ${idsToRemove.length} removed (FK=NULL), ${updateCount} updated, ${createCount} created`);
       }
     }
 

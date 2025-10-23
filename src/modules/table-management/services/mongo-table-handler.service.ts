@@ -59,7 +59,7 @@ export class MongoTableHandlerService {
       
       for (const { oldName, newName, collectionName } of renamedColumns) {
         try {
-          this.logger.log(`🔄 [Background] Renaming field '${oldName}' → '${newName}' in ${collectionName}`);
+          this.logger.log(`[Background] Renaming field '${oldName}' → '${newName}' in ${collectionName}`);
           
           // MongoDB $rename atomically renames field
           const result = await db.collection(collectionName).updateMany(
@@ -67,9 +67,9 @@ export class MongoTableHandlerService {
             { $rename: { [oldName]: newName } }
           );
           
-          this.logger.log(`  ✅ [Background] Renamed ${result.modifiedCount} documents in ${collectionName}`);
+          this.logger.log(`  [Background] Renamed ${result.modifiedCount} documents in ${collectionName}`);
         } catch (error) {
-          this.logger.error(`  ❌ [Background] Failed to rename field in ${collectionName}:`, error.message);
+          this.logger.error(`  [Background] Failed to rename field in ${collectionName}:`, error.message);
         }
       }
     })().catch(err => {
@@ -91,7 +91,7 @@ export class MongoTableHandlerService {
       return;
     }
     
-    this.logger.log(`🧹 Dropping relation fields for ${newRelations.length} relation(s) before update`);
+    this.logger.log(`Dropping relation fields for ${newRelations.length} relation(s) before update`);
     
     for (const relation of newRelations) {
       // Get target table name
@@ -124,7 +124,7 @@ export class MongoTableHandlerService {
           {}, // Empty filter = all documents
           { $unset: { [sourceFieldName]: "" } }
         );
-        this.logger.log(`  ✅ Dropped '${sourceFieldName}' from '${sourceTableName}'`);
+        this.logger.log(`  Dropped '${sourceFieldName}' from '${sourceTableName}'`);
       }
       
       // 2. DROP inverse field from ALL records in target table (if has inverse)
@@ -133,7 +133,7 @@ export class MongoTableHandlerService {
           {}, // Empty filter = all documents
           { $unset: { [inverseFieldName]: "" } }
         );
-        this.logger.log(`  ✅ Dropped '${inverseFieldName}' from '${targetTableName}'`);
+        this.logger.log(`  Dropped '${inverseFieldName}' from '${targetTableName}'`);
       }
     }
     
@@ -221,8 +221,8 @@ export class MongoTableHandlerService {
         description: body.description,
         uniques: JSON.stringify(body.uniques || []),
         indexes: JSON.stringify(body.indexes || []),
-        columns: [], // Initialize empty array
-        relations: [], // Initialize empty array
+        // NOTE: columns and relations are inverse one-to-many - NOT stored
+        // They will be computed via $lookup based on metadata
       });
 
       // MongoDB returns _id, not id
@@ -251,22 +251,12 @@ export class MongoTableHandlerService {
             });
             const colId = typeof columnRecord._id === 'string' ? new ObjectId(columnRecord._id) : columnRecord._id;
             insertedColumnIds.push(colId);
-            this.logger.log(`   ✅ Column inserted: ${col.name}`);
-          }
-          
-          // Update table with column ObjectIds
-          if (insertedColumnIds.length > 0) {
-            await this.queryBuilder.update({
-              table: 'table_definition',
-              where: [{ field: '_id', operator: '=', value: tableId }],
-              data: { columns: insertedColumnIds },
-            });
-            this.logger.log(`   ✅ Updated table with ${insertedColumnIds.length} column refs`);
+            this.logger.log(`   Column inserted: ${col.name}`);
           }
         }
       } catch (error) {
         // Rollback: delete table metadata if column insert fails
-        this.logger.error(`   ❌ Failed to insert columns, rolling back table creation`);
+        this.logger.error(`   Failed to insert columns, rolling back table creation`);
         await this.queryBuilder.deleteById('table_definition', tableId);
         throw new ValidationException(
           `Failed to create table: ${error.message}`,
@@ -312,22 +302,15 @@ export class MongoTableHandlerService {
             });
             const relId = typeof relationRecord._id === 'string' ? new ObjectId(relationRecord._id) : relationRecord._id;
             insertedRelationIds.push(relId);
-            this.logger.log(`   ✅ Relation inserted: ${rel.propertyName}`);
+            this.logger.log(`   Relation inserted: ${rel.propertyName}`);
           }
-          
-          // Update table with relation ObjectIds
-          if (insertedRelationIds.length > 0) {
-            await this.queryBuilder.update({
-              table: 'table_definition',
-              where: [{ field: '_id', operator: '=', value: tableId }],
-              data: { relations: insertedRelationIds },
-            });
-            this.logger.log(`   ✅ Updated table with ${insertedRelationIds.length} relation refs`);
-          }
+
+          // NOTE: relations is inverse O2M - NOT stored in table_definition
+          // Computed via $lookup based on relation.sourceTable field
         }
       } catch (error) {
         // Rollback: delete table metadata and columns if relation insert fails
-        this.logger.error(`   ❌ Failed to insert relations, rolling back table creation`);
+        this.logger.error(`   Failed to insert relations, rolling back table creation`);
         
         // Delete inserted columns
         for (const colId of insertedColumnIds) {
@@ -364,7 +347,7 @@ export class MongoTableHandlerService {
             hooks: [],
           },
         });
-        this.logger.log(`✅ Route /${body.name} created for collection ${body.name}`);
+        this.logger.log(`Route /${body.name} created for collection ${body.name}`);
       }
 
       // Fetch full metadata
@@ -373,7 +356,7 @@ export class MongoTableHandlerService {
       // Create collection with validation and indexes
       await this.schemaMigrationService.createCollection(fullMetadata);
 
-      this.logger.log(`✅ Collection created: ${body.name} (metadata + validation + indexes)`);
+      this.logger.log(`Collection created: ${body.name} (metadata + validation + indexes)`);
       return fullMetadata;
     } catch (error) {
       this.loggingService.error('Collection creation failed', {
@@ -430,14 +413,17 @@ export class MongoTableHandlerService {
 
       validateUniquePropertyNames(body.columns || [], body.relations || []);
 
-      // Update table metadata
-      await this.queryBuilder.updateById('table_definition', id, {
-        name: body.name,
-        alias: body.alias,
-        description: body.description,
-        uniques: body.uniques ? JSON.stringify(body.uniques) : exists.uniques,
-        indexes: body.indexes ? JSON.stringify(body.indexes) : exists.indexes,
-      });
+      // Update table metadata (only update fields that are present in body)
+      const updateData: any = {};
+      if ('name' in body) updateData.name = body.name;
+      if ('alias' in body) updateData.alias = body.alias;
+      if ('description' in body) updateData.description = body.description;
+      if ('uniques' in body) updateData.uniques = body.uniques;
+      if ('indexes' in body) updateData.indexes = body.indexes;
+
+      if (Object.keys(updateData).length > 0) {
+        await this.queryBuilder.updateById('table_definition', id, updateData);
+      }
 
       // Update columns
       if (body.columns) {
@@ -459,7 +445,7 @@ export class MongoTableHandlerService {
               {},
               { $unset: { [deletedCol.name]: "" } }
             );
-            this.logger.log(`  ✅ Dropped field '${deletedCol.name}' from all records`);
+            this.logger.log(`  Dropped field '${deletedCol.name}' from all records`);
           }
           await this.queryBuilder.deleteById('column_definition', colId);
         }
@@ -519,11 +505,6 @@ export class MongoTableHandlerService {
           }
           columnIds.push(colObjectId);
         }
-        
-        // Update table_definition.columns array
-        await this.queryBuilder.updateById('table_definition', id, {
-          columns: columnIds,
-        });
       }
 
       // Update relations
@@ -532,7 +513,7 @@ export class MongoTableHandlerService {
           sourceTable: queryId, // MongoDB uses 'sourceTable' field
         });
 
-        // CRITICAL: Drop fields FIRST before updating metadata
+        // Drop fields FIRST before updating metadata
         // This ensures clean state and prevents stale data
         await this.dropRelationFieldsBeforeUpdate(
           body.relations,
@@ -592,25 +573,17 @@ export class MongoTableHandlerService {
           }
           relationIds.push(relObjectId);
         }
-        
-        // Update table_definition.relations array
-        await this.queryBuilder.updateById('table_definition', id, {
-          relations: relationIds,
-        });
+
       }
 
-      // Get old metadata before migration
       const oldMetadata = await this.metadataCacheService.lookupTableByName(exists.name);
-
-      // Get new metadata (will be used for migration)
       const newMetadata = await this.getFullTableMetadata(id);
 
-      // Update collection validation and indexes
       if (oldMetadata && newMetadata) {
         await this.schemaMigrationService.updateCollection(exists.name, oldMetadata, newMetadata);
       }
 
-      this.logger.log(`✅ Collection updated: ${exists.name} (metadata + validation + indexes)`);
+      this.logger.log(`Collection updated: ${exists.name} (metadata + validation + indexes)`);
       return newMetadata;
     } catch (error) {
       this.loggingService.error('Collection update failed', {
@@ -662,7 +635,7 @@ export class MongoTableHandlerService {
       for (const route of routes) {
         await this.queryBuilder.deleteById('route_definition', route._id);
       }
-      this.logger.log(`🗑️ Deleted ${routes.length} routes with mainTable = ${id}`);
+      this.logger.log(`Deleted ${routes.length} routes with mainTable = ${id}`);
 
       // Delete metadata (MongoDB: sourceTableId and table are ObjectIds)
       const relations = await this.queryBuilder.findWhere('relation_definition', {
@@ -684,7 +657,7 @@ export class MongoTableHandlerService {
       // Drop collection
       await this.schemaMigrationService.dropCollection(collectionName);
 
-      this.logger.log(`✅ Collection deleted: ${collectionName} (metadata + collection)`);
+      this.logger.log(`Collection deleted: ${collectionName} (metadata + collection)`);
       return exists;
     } catch (error) {
       this.loggingService.error('Collection deletion failed', {

@@ -15,7 +15,14 @@ export class RouteHandlerDefinitionProcessor extends BaseTableProcessor {
     const transformedRecords = await Promise.all(
       records.map(async (record) => {
         const transformedRecord = { ...record };
-        
+
+        // Add timestamps for MongoDB
+        if (isMongoDB) {
+          const now = new Date();
+          if (!transformedRecord.createdAt) transformedRecord.createdAt = now;
+          if (!transformedRecord.updatedAt) transformedRecord.updatedAt = now;
+        }
+
         // Handle route reference
         if (record.route) {
           const routeEntity = await this.queryBuilder.findOneWhere('route_definition', {
@@ -24,7 +31,7 @@ export class RouteHandlerDefinitionProcessor extends BaseTableProcessor {
           
           if (!routeEntity) {
             this.logger.warn(
-              `⚠️ Route '${record.route}' not found for handler, skipping.`,
+              `Route '${record.route}' not found for handler, skipping.`,
             );
             return null;
           }
@@ -49,7 +56,7 @@ export class RouteHandlerDefinitionProcessor extends BaseTableProcessor {
           
           if (!methodEntity) {
             this.logger.warn(
-              `⚠️ Method '${record.method}' not found for handler, skipping.`,
+              `Method '${record.method}' not found for handler, skipping.`,
             );
             return null;
           }

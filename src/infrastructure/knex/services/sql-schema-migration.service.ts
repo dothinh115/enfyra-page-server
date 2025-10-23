@@ -17,7 +17,7 @@ import {
   generateForeignKeySQL,
 } from '../utils/migration/foreign-key-operations';
 import { analyzeRelationChanges } from '../utils/migration/relation-changes';
-import { generateSQLFromDiff, executeSQLStatements } from '../utils/migration/sql-diff-generator';
+import { generateSQLFromDiff, generateBatchSQL, executeBatchSQL } from '../utils/migration/sql-diff-generator';
 
 @Injectable()
 export class SqlSchemaMigrationService {
@@ -36,11 +36,11 @@ export class SqlSchemaMigrationService {
     const tableName = tableMetadata.name;
 
     if (await knex.schema.hasTable(tableName)) {
-      this.logger.warn(`⚠️  Table ${tableName} already exists, skipping creation`);
+      this.logger.warn(`Table ${tableName} already exists, skipping creation`);
       return;
     }
 
-    this.logger.log(`🔨 Creating table: ${tableName}`);
+    this.logger.log(`Creating table: ${tableName}`);
 
     await knex.schema.createTable(tableName, (table) => {
 
@@ -49,20 +49,20 @@ export class SqlSchemaMigrationService {
       }
 
       if (tableMetadata.relations) {
-        this.logger.log(`🔍 CREATE TABLE: Processing ${tableMetadata.relations.length} relations`);
+        this.logger.log(`CREATE TABLE: Processing ${tableMetadata.relations.length} relations`);
         for (const rel of tableMetadata.relations) {
-          this.logger.log(`🔍 CREATE TABLE: Relation ${rel.propertyName} (${rel.type}) - target: ${rel.targetTableName}`);
+          this.logger.log(`CREATE TABLE: Relation ${rel.propertyName} (${rel.type}) - target: ${rel.targetTableName}`);
           if (!['many-to-one', 'one-to-one'].includes(rel.type)) {
             if (rel.type === 'one-to-many') {
-              this.logger.log(`🔍 CREATE TABLE: O2M relation detected - will create FK column in target table ${rel.targetTableName}`);
+              this.logger.log(`CREATE TABLE: O2M relation detected - will create FK column in target table ${rel.targetTableName}`);
 
             } else {
-              this.logger.log(`🔍 CREATE TABLE: Skipping ${rel.type} relation (not M2O/O2O/O2M)`);
+              this.logger.log(`CREATE TABLE: Skipping ${rel.type} relation (not M2O/O2O/O2M)`);
             }
             continue;
           }
 
-          this.logger.log(`🔍 DEBUG CREATE: rel.foreignKeyColumn = ${rel.foreignKeyColumn}, rel.targetTableName = ${rel.targetTableName}, rel.targetTable = ${rel.targetTable}`);
+          this.logger.log(`DEBUG CREATE: rel.foreignKeyColumn = ${rel.foreignKeyColumn}, rel.targetTableName = ${rel.targetTableName}, rel.targetTable = ${rel.targetTable}`);
           const targetTableName = rel.targetTableName || rel.targetTable;
 
           if (!targetTableName) {
@@ -71,14 +71,17 @@ export class SqlSchemaMigrationService {
 
           const fkColumn = `${rel.propertyName}Id`;
 
-          this.logger.log(`🔍 CREATE TABLE: Creating FK column ${fkColumn} for relation ${rel.propertyName} (target: ${targetTableName})`);
-          
+          this.logger.log(`CREATE TABLE: Creating FK column ${fkColumn} for relation ${rel.propertyName} (target: ${targetTableName})`);
+          this.logger.log(`DEBUG: rel.isNullable = ${rel.isNullable}, type: ${typeof rel.isNullable}`);
 
           const fkCol = table.integer(fkColumn).unsigned();
-          
-          if (rel.isNullable === false) {
+
+          // isNullable can be 0/1 (number) or true/false (boolean)
+          if (rel.isNullable === false || rel.isNullable === 0) {
+            this.logger.log(`  Setting FK column as NOT NULL`);
             fkCol.notNullable();
           } else {
+            this.logger.log(`  Setting FK column as NULLABLE (isNullable=${rel.isNullable})`);
             fkCol.nullable();
           }
           
@@ -109,13 +112,13 @@ export class SqlSchemaMigrationService {
       const targetTable = rel.targetTableName || rel.targetTable;
 
       if (!targetTable) {
-        this.logger.warn(`⚠️  Skipping FK constraint for relation ${rel.propertyName}: missing targetTableName`);
+        this.logger.warn(`Skipping FK constraint for relation ${rel.propertyName}: missing targetTableName`);
         continue;
       }
 
       const fkColumn = `${rel.propertyName}Id`;
 
-      this.logger.log(`🔍 CREATE TABLE: Creating FK constraint ${fkColumn} -> ${targetTable} for relation ${rel.propertyName}`);
+      this.logger.log(`CREATE TABLE: Creating FK constraint ${fkColumn} -> ${targetTable} for relation ${rel.propertyName}`);
 
       try {
         await knex.schema.alterTable(tableName, (table) => {
@@ -129,8 +132,8 @@ export class SqlSchemaMigrationService {
 
     for (const rel of tableMetadata.relations || []) {
       if (rel.type === 'one-to-many') {
-        this.logger.log(`🔍 DEBUG O2M CREATE: rel.targetTableName = ${rel.targetTableName}, rel.targetTable = ${rel.targetTable}, tableName = ${tableName}`);
-        this.logger.log(`🔍 DEBUG O2M CREATE: rel.foreignKeyColumn = ${rel.foreignKeyColumn}, rel.inversePropertyName = ${rel.inversePropertyName}`);
+        this.logger.log(`DEBUG O2M CREATE: rel.targetTableName = ${rel.targetTableName}, rel.targetTable = ${rel.targetTable}, tableName = ${tableName}`);
+        this.logger.log(`DEBUG O2M CREATE: rel.foreignKeyColumn = ${rel.foreignKeyColumn}, rel.inversePropertyName = ${rel.inversePropertyName}`);
         
         if (!rel.inversePropertyName) {
           throw new Error(`One-to-many relation '${rel.propertyName}' in table '${tableName}' MUST have inversePropertyName`);
@@ -146,13 +149,14 @@ export class SqlSchemaMigrationService {
 
         const fkColumn = `${rel.inversePropertyName}Id`;
 
-        this.logger.log(`🔍 CREATE TABLE: Creating O2M FK column ${fkColumn} in target table ${targetTable} for relation ${rel.propertyName}`);
+        this.logger.log(`CREATE TABLE: Creating O2M FK column ${fkColumn} in target table ${targetTable} for relation ${rel.propertyName}`);
 
         try {
 
           await knex.schema.alterTable(targetTable, (table) => {
             const fkCol = table.integer(fkColumn).unsigned();
-            if (rel.isNullable === false) {
+            // isNullable can be 0/1 (number) or true/false (boolean)
+            if (rel.isNullable === false || rel.isNullable === 0) {
               fkCol.notNullable();
             } else {
               fkCol.nullable();
@@ -160,14 +164,14 @@ export class SqlSchemaMigrationService {
 
             table.index([fkColumn]);
           });
-          
+
 
           await knex.schema.alterTable(targetTable, (table) => {
-            const onDelete = rel.isNullable === false ? 'RESTRICT' : 'SET NULL';
+            const onDelete = (rel.isNullable === false || rel.isNullable === 0) ? 'RESTRICT' : 'SET NULL';
             table.foreign(fkColumn).references('id').inTable(sourceTable).onDelete(onDelete).onUpdate('CASCADE');
           });
           
-          this.logger.log(`✅ Created O2M FK column ${fkColumn} in ${targetTable}`);
+          this.logger.log(`Created O2M FK column ${fkColumn} in ${targetTable}`);
         } catch (error) {
           this.logger.warn(`Failed to add O2M FK column ${fkColumn} to ${targetTable}: ${error.message}`);
         }
@@ -176,15 +180,15 @@ export class SqlSchemaMigrationService {
 
     for (const rel of tableMetadata.relations || []) {
       if (rel.type === 'many-to-many') {
-        this.logger.log(`🔍 CREATE TABLE: Processing M2M relation ${rel.propertyName} -> ${rel.targetTableName}`);
+        this.logger.log(`CREATE TABLE: Processing M2M relation ${rel.propertyName} -> ${rel.targetTableName}`);
 
         if (!rel.junctionTableName) {
-          this.logger.warn(`⚠️  M2M relation '${rel.propertyName}' missing junctionTableName, skipping junction table creation`);
+          this.logger.warn(`M2M relation '${rel.propertyName}' missing junctionTableName, skipping junction table creation`);
           continue;
         }
 
         if (!rel.junctionSourceColumn || !rel.junctionTargetColumn) {
-          this.logger.warn(`⚠️  M2M relation '${rel.propertyName}' missing junction column names, skipping`);
+          this.logger.warn(`M2M relation '${rel.propertyName}' missing junction column names, skipping`);
           continue;
         }
 
@@ -196,11 +200,11 @@ export class SqlSchemaMigrationService {
 
         const junctionExists = await knex.schema.hasTable(junctionTableName);
         if (junctionExists) {
-          this.logger.log(`⏭️  Junction table ${junctionTableName} already exists, skipping`);
+          this.logger.log(`Junction table ${junctionTableName} already exists, skipping`);
           continue;
         }
 
-        this.logger.log(`🔨 Creating junction table: ${junctionTableName}`);
+        this.logger.log(`Creating junction table: ${junctionTableName}`);
         this.logger.log(`   Source: ${sourceTable}.id → ${junctionSourceColumn}`);
         this.logger.log(`   Target: ${targetTable}.id → ${junctionTargetColumn}`);
 
@@ -250,15 +254,15 @@ export class SqlSchemaMigrationService {
 
         try {
           await knex.raw(createJunctionSQL);
-          this.logger.log(`✅ Created junction table: ${junctionTableName}`);
+          this.logger.log(`Created junction table: ${junctionTableName}`);
         } catch (error) {
-          this.logger.error(`❌ Failed to create junction table ${junctionTableName}: ${error.message}`);
+          this.logger.error(`Failed to create junction table ${junctionTableName}: ${error.message}`);
           throw error;
         }
       }
     }
 
-    this.logger.log(`✅ Created table: ${tableName} (with ${tableMetadata.relations?.filter((r: any) => r.type === 'many-to-many').length || 0} junction tables)`);
+    this.logger.log(`Created table: ${tableName} (with ${tableMetadata.relations?.filter((r: any) => r.type === 'many-to-many').length || 0} junction tables)`);
   }
 
   async updateTable(
@@ -266,29 +270,35 @@ export class SqlSchemaMigrationService {
     oldMetadata: any,
     newMetadata: any,
   ): Promise<void> {
-    this.logger.log(`🔄 SCHEMA MIGRATION: updateTable called for ${tableName}`);
-    this.logger.log(`🔍 DEBUG: oldMetadata relations count: ${(oldMetadata.relations || []).length}`);
-    this.logger.log(`🔍 DEBUG: newMetadata relations count: ${(newMetadata.relations || []).length}`);
+    this.logger.log(`SCHEMA MIGRATION: updateTable called for ${tableName}`);
+    this.logger.log(`DEBUG: oldMetadata relations count: ${(oldMetadata.relations || []).length}`);
+    this.logger.log(`DEBUG: newMetadata relations count: ${(newMetadata.relations || []).length}`);
     const knex = this.knexService.getKnex();
 
     if (!(await knex.schema.hasTable(tableName))) {
-      this.logger.warn(`⚠️  Table ${tableName} does not exist, creating...`);
+      this.logger.warn(`Table ${tableName} does not exist, creating...`);
       await this.createTable(newMetadata);
       return;
     }
 
-    this.logger.log(`🔄 Updating table: ${tableName}`);
-
-  
+    this.logger.log(`Updating table: ${tableName}`);
 
     const schemaDiff = await this.generateSchemaDiff(oldMetadata, newMetadata);
-    
-    
 
-    await this.executeSchemaDiff(tableName, schemaDiff);
+    const batchSQL = await this.executeSchemaDiff(tableName, schemaDiff);
+
+    // Log executed batch SQL
+    if (batchSQL && batchSQL.trim() !== '' && batchSQL.trim() !== ';') {
+      this.logger.log(`\n${'='.repeat(80)}`);
+      this.logger.log(`📦 EXECUTED BATCH SQL FOR TABLE: ${tableName}`);
+      this.logger.log(`${'='.repeat(80)}`);
+      this.logger.log(batchSQL);
+      this.logger.log(`${'='.repeat(80)}\n`);
+    } else {
+      this.logger.log(`No SQL changes required for table: ${tableName}`);
+    }
 
     await this.compareMetadataWithActualSchema(tableName, newMetadata);
-
   }
 
   async compareMetadataWithActualSchema(tableName: string, metadata: any): Promise<void> {
@@ -309,15 +319,15 @@ export class SqlSchemaMigrationService {
       const extraInCache = [...cachedColNames].filter(name => !inputColNames.has(name));
 
       if (missingInCache.length > 0) {
-        this.logger.warn(`  ⚠️  Columns in input but not in cache: ${missingInCache.join(', ')}`);
+        this.logger.warn(`  Columns in input but not in cache: ${missingInCache.join(', ')}`);
       }
 
       if (extraInCache.length > 0) {
-        this.logger.warn(`  ⚠️  Columns in cache but not in input: ${extraInCache.join(', ')}`);
+        this.logger.warn(`  Columns in cache but not in input: ${extraInCache.join(', ')}`);
       }
 
       if (missingInCache.length === 0 && extraInCache.length === 0) {
-        this.logger.log(`  ✅ Column structure matches between input and cached metadata`);
+        this.logger.log(`  Column structure matches between input and cached metadata`);
       }
 
     } catch (error) {
@@ -325,15 +335,16 @@ export class SqlSchemaMigrationService {
     }
   }
 
-  async dropTable(tableName: string, relations?: any[]): Promise<void> {
-    const knex = this.knexService.getKnex();
+  async dropTable(tableName: string, relations?: any[], trx?: any): Promise<void> {
+    // Use transaction if provided, otherwise use knex
+    const db = trx || this.knexService.getKnex();
 
-    if (!(await knex.schema.hasTable(tableName))) {
-      this.logger.warn(`⚠️  Table ${tableName} does not exist, skipping drop`);
+    if (!(await db.schema.hasTable(tableName))) {
+      this.logger.warn(`Table ${tableName} does not exist, skipping drop`);
       return;
     }
 
-    this.logger.log(`🗑️  Dropping table: ${tableName}`);
+    this.logger.log(` Dropping table: ${tableName}`);
 
     // If relations not provided, get from metadata
     let relationsToCheck = relations;
@@ -341,7 +352,7 @@ export class SqlSchemaMigrationService {
       const metadata = await this.metadataCacheService.lookupTableByName(tableName);
       if (metadata && metadata.relations) {
         relationsToCheck = metadata.relations;
-        this.logger.log(`📋 Loaded ${relationsToCheck.length} relations from metadata for table ${tableName}`);
+        this.logger.log(`Loaded ${relationsToCheck.length} relations from metadata for table ${tableName}`);
       }
     }
 
@@ -351,22 +362,28 @@ export class SqlSchemaMigrationService {
 
       for (const rel of m2mRelations) {
         if (rel.junctionTableName) {
-          const hasJunctionTable = await knex.schema.hasTable(rel.junctionTableName);
+          const hasJunctionTable = await db.schema.hasTable(rel.junctionTableName);
           if (hasJunctionTable) {
-            await knex.schema.dropTable(rel.junctionTableName);
-            this.logger.log(`✅ Dropped junction table: ${rel.junctionTableName}`);
+            await db.schema.dropTable(rel.junctionTableName);
+            this.logger.log(`Dropped junction table: ${rel.junctionTableName}`);
           }
         }
       }
     }
 
     // Drop all foreign keys referencing this table
-    const dbType = this.queryBuilderService.getDatabaseType() as 'mysql' | 'postgres' | 'sqlite';
-    await dropAllForeignKeysReferencingTable(knex, tableName, dbType);
+    // NOTE: When called within a transaction (trx is provided), FK constraints are already
+    // handled by SqlTableHandlerService.delete() to avoid transaction isolation issues
+    if (!trx) {
+      const dbType = this.queryBuilderService.getDatabaseType() as 'mysql' | 'postgres' | 'sqlite';
+      await dropAllForeignKeysReferencingTable(db, tableName, dbType);
+    } else {
+      this.logger.log(`Skipping FK constraint check (already handled in transaction)`);
+    }
 
     // Drop the table itself
-    await knex.schema.dropTableIfExists(tableName);
-    this.logger.log(`✅ Dropped table: ${tableName}`);
+    await db.schema.dropTableIfExists(tableName);
+    this.logger.log(`Dropped table: ${tableName}`);
   }
 
 
@@ -433,16 +450,16 @@ export class SqlSchemaMigrationService {
     const oldColMap = new Map(oldColumns.filter(c => c.id != null).map(c => [c.id, c]));
     const newColMap = new Map(newColumns.filter(c => c.id != null).map(c => [c.id, c]));
 
-    this.logger.log('🔍 Column Analysis (Explicit Columns Only):');
+    this.logger.log('Column Analysis (Explicit Columns Only):');
     this.logger.log('  Old columns:', oldColumns.map(c => `${c.id}:${c.name}`));
     this.logger.log('  New columns:', newColumns.map(c => `${c.id}:${c.name}`));
 
 
-    this.logger.log('🔍 Old columns details:', JSON.stringify(oldColumns.map(c => ({ id: c.id, name: c.name, type: c.type })), null, 2));
-    this.logger.log('🔍 New columns details:', JSON.stringify(newColumns.map(c => ({ id: c.id, name: c.name, type: c.type })), null, 2));
+    this.logger.log('Old columns details:', JSON.stringify(oldColumns.map(c => ({ id: c.id, name: c.name, type: c.type })), null, 2));
+    this.logger.log('New columns details:', JSON.stringify(newColumns.map(c => ({ id: c.id, name: c.name, type: c.type })), null, 2));
 
-    this.logger.log('🔍 Old column IDs (filtered):', Array.from(oldColMap.keys()));
-    this.logger.log('🔍 New column IDs (filtered):', Array.from(newColMap.keys()));
+    this.logger.log('Old column IDs (filtered):', Array.from(oldColMap.keys()));
+    this.logger.log('New column IDs (filtered):', Array.from(newColMap.keys()));
 
     for (const newCol of newColumns) {
       if (newCol.id == null) {
@@ -452,7 +469,7 @@ export class SqlSchemaMigrationService {
       }
 
       const hasInOld = oldColMap.has(newCol.id);
-      this.logger.log(`  🔍 Checking newCol ${newCol.id}:${newCol.name} - exists in old? ${hasInOld}`);
+      this.logger.log(`  Checking newCol ${newCol.id}:${newCol.name} - exists in old? ${hasInOld}`);
 
       if (!hasInOld) {
         this.logger.log(`  ➕ Column to CREATE: ${newCol.name} (id=${newCol.id})`);
@@ -463,21 +480,21 @@ export class SqlSchemaMigrationService {
     for (const oldCol of oldColumns) {
       if (oldCol.id == null) {
         if (this.isSystemColumn(oldCol.name)) {
-          this.logger.log(`  🛡️  System column protected: ${oldCol.name} (no id - system column)`);
+          this.logger.log(`  System column protected: ${oldCol.name} (no id - system column)`);
         } else {
-          this.logger.log(`  ⚠️  Old column without id: ${oldCol.name} - skipping`);
+          this.logger.log(`  Old column without id: ${oldCol.name} - skipping`);
         }
         continue;
       }
 
       const newCol = newColMap.get(oldCol.id);
 
-      this.logger.log(`  🔍 Checking oldCol ${oldCol.id}:${oldCol.name} - found in new? ${!!newCol}`);
+      this.logger.log(`  Checking oldCol ${oldCol.id}:${oldCol.name} - found in new? ${!!newCol}`);
 
       if (!newCol) {
 
         if (this.isSystemColumn(oldCol.name)) {
-          this.logger.log(`  🛡️  System column protected: ${oldCol.name}`);
+          this.logger.log(`  System column protected: ${oldCol.name}`);
         } else {
           this.logger.log(`  ➖ Column to DELETE: ${oldCol.name} (id=${oldCol.id})`);
           diff.columns.delete.push(oldCol);
@@ -485,7 +502,7 @@ export class SqlSchemaMigrationService {
       } else {
 
         if (oldCol.id && newCol.id && oldCol.id === newCol.id && oldCol.name !== newCol.name) {
-          this.logger.log(`  🔄 Column to RENAME: ${oldCol.name} → ${newCol.name} (id=${oldCol.id})`);
+          this.logger.log(`  Column to RENAME: ${oldCol.name} → ${newCol.name} (id=${oldCol.id})`);
           diff.columns.rename.push({
             oldName: oldCol.name,
             newName: newCol.name,
@@ -499,7 +516,7 @@ export class SqlSchemaMigrationService {
             newColumn: newCol
           });
         } else {
-          this.logger.log(`  ✅ Column unchanged: ${newCol.name} (id=${newCol.id})`);
+          this.logger.log(`  Column unchanged: ${newCol.name} (id=${newCol.id})`);
         }
       }
     }
@@ -510,16 +527,22 @@ export class SqlSchemaMigrationService {
     return systemColumns.includes(columnName);
   }
 
-  private async executeSchemaDiff(tableName: string, diff: any): Promise<void> {
+  private async executeSchemaDiff(tableName: string, diff: any): Promise<string> {
     const knex = this.knexService.getKnex();
     const dbType = this.queryBuilderService.getDatabaseType() as 'mysql' | 'postgres' | 'sqlite';
 
+    // Step 1: Generate SQL statements array
     const sqlStatements = await generateSQLFromDiff(knex, tableName, diff, dbType);
-
-
     this.logger.debug('Generated SQL Statements:', sqlStatements);
 
-    await executeSQLStatements(knex, sqlStatements);
+    // Step 2: Generate batch SQL (single string)
+    const batchSQL = generateBatchSQL(sqlStatements);
+
+    // Step 3: Execute batch with database-specific behavior (transaction for PostgreSQL)
+    await executeBatchSQL(knex, batchSQL, dbType);
+
+    // Step 4: Return batch SQL for logging
+    return batchSQL;
   }
 
 
@@ -534,7 +557,7 @@ export class SqlSchemaMigrationService {
   }
 
   private analyzeConstraintChanges(oldMetadata: any, newMetadata: any, diff: any): void {
-    this.logger.log('🔍 Constraint Analysis:');
+    this.logger.log('Constraint Analysis:');
 
     const oldUniques = oldMetadata.uniques || [];
     const newUniques = newMetadata.uniques || [];
@@ -543,7 +566,7 @@ export class SqlSchemaMigrationService {
       this.logger.log(`  🔧 Unique constraints changed:`, { oldUniques, newUniques });
       diff.constraints.uniques.update = newUniques;
     } else {
-      this.logger.log(`  ✅ Unique constraints unchanged`);
+      this.logger.log(`  Unique constraints unchanged`);
     }
 
     const oldIndexes = oldMetadata.indexes || [];
@@ -553,7 +576,7 @@ export class SqlSchemaMigrationService {
       this.logger.log(`  🔧 Indexes changed:`, { oldIndexes, newIndexes });
       diff.constraints.indexes.update = newIndexes;
     } else {
-      this.logger.log(`  ✅ Indexes unchanged`);
+      this.logger.log(`  Indexes unchanged`);
     }
   }
 

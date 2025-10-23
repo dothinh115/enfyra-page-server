@@ -54,13 +54,7 @@ export class AuthService {
           remember: body.remember,
         };
 
-    console.log('🔍 DEBUG SESSION INSERT:', { 
-      sessionData, 
-      dbType: this.queryBuilder.getDatabaseType(),
-      isMongoDB: this.queryBuilder.isMongoDb()
-    });
     const insertedSession = await this.queryBuilder.insertAndGet('session_definition', sessionData);
-    console.log('🔍 DEBUG SESSION RESULT:', insertedSession);
       
     // Get session ID (MongoDB uses _id, SQL uses id)
     const sessionId = isMongoDB 
@@ -136,9 +130,14 @@ export class AuthService {
       throw new BadRequestException('Session not found!');
     }
 
+    // MongoDB: session.user (ObjectId or object), SQL: session.userId (string)
+    const userId = this.queryBuilder.isMongoDb()
+      ? (session.user?._id || session.user)
+      : session.userId;
+
     const accessToken = this.jwtService.sign(
       {
-        id: session.userId,
+        id: userId,
       },
       {
         expiresIn: this.configService.get<string>('ACCESS_TOKEN_EXP'),
@@ -160,6 +159,8 @@ export class AuthService {
           },
         )
       : body.refreshToken;
+
+     
     const accessTokenDecoded = await this.jwtService.decode(accessToken);
     return {
       accessToken,
