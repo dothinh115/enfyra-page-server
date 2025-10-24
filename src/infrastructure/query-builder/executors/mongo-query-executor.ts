@@ -8,11 +8,9 @@ import { hasLogicalOperators } from '../utils/build-where-clause';
 export class MongoQueryExecutor {
   private debugLog: any[] = [];
   private readonly db: Db;
+  private metadata: any;
 
-  constructor(
-    private readonly mongoService: any,
-    private readonly metadataCache: any,
-  ) {
+  constructor(private readonly mongoService: any) {
     this.db = mongoService.getDb();
   }
 
@@ -27,7 +25,9 @@ export class MongoQueryExecutor {
     deep?: Record<string, any>;
     debugLog?: any[];
     pipeline?: any[];
+    metadata?: any;
   }): Promise<any> {
+    this.metadata = options.metadata;
     const debugLog = options.debugLog || [];
     this.debugLog = debugLog;
 
@@ -87,7 +87,7 @@ export class MongoQueryExecutor {
           }
         }
       } else {
-        queryOptions.mongoLogicalFilter = this.convertLogicalFilterToMongo(options.filter);
+        queryOptions.mongoLogicalFilter = this.convertLogicalFilterToMongo(options.filter, options.tableName);
       }
     }
 
@@ -142,7 +142,7 @@ export class MongoQueryExecutor {
         let filter = {};
 
         if (queryOptions.where && queryOptions.where.length > 0) {
-          filter = this.whereToMongoFilter(queryOptions.where);
+          filter = this.whereToMongoFilter(queryOptions.where, options.tableName);
         }
 
         filterCount = await collection.countDocuments(filter);
@@ -216,23 +216,69 @@ export class MongoQueryExecutor {
       return this.transformMongoResults(results);
     }
 
-    if (options.mongoFieldsExpanded) {
-      return this.executeAggregationPipeline(collection, options);
-    }
-
-    return this.executeSimpleQuery(collection, options);
+    return this.executeAggregationPipeline(collection, options);
   }
 
   private async executeAggregationPipeline(collection: Collection, options: QueryOptions): Promise<any[]> {
-    const { scalarFields, relations } = options.mongoFieldsExpanded!;
     const pipeline: any[] = [];
 
     if (options.where) {
-      const filter = this.whereToMongoFilter(options.where);
+      const filter = this.whereToMongoFilter(options.where, options.table);
       pipeline.push({ $match: filter });
     } else if (options.mongoLogicalFilter) {
       pipeline.push({ $match: options.mongoLogicalFilter });
     }
+
+    if (!options.mongoFieldsExpanded) {
+      if (options.select) {
+        const projection: any = {};
+        for (const field of options.select) {
+          projection[field] = 1;
+        }
+        pipeline.push({ $project: projection });
+      }
+
+      if (options.sort) {
+        const sortSpec: any = {};
+        for (const sortOpt of options.sort) {
+          let fieldName = sortOpt.field.includes('.') ? sortOpt.field.split('.').pop() : sortOpt.field;
+          if (fieldName === 'id') {
+            fieldName = '_id';
+          }
+          sortSpec[fieldName] = sortOpt.direction === 'asc' ? 1 : -1;
+        }
+        pipeline.push({ $sort: sortSpec });
+      }
+
+      if (options.mongoCountOnly) {
+        pipeline.push({ $count: 'count' });
+      } else {
+        if (options.offset) {
+          pipeline.push({ $skip: options.offset });
+        }
+        if (options.limit !== undefined && options.limit !== null && options.limit > 0) {
+          pipeline.push({ $limit: options.limit });
+        }
+      }
+
+      if (this.debugLog && this.debugLog.length >= 0) {
+        this.debugLog.push({
+          type: 'MongoDB Aggregation Pipeline',
+          collection: options.table,
+          pipeline: JSON.parse(JSON.stringify(pipeline)),
+        });
+      }
+
+      const results = await collection.aggregate(pipeline).toArray();
+
+      if (options.mongoCountOnly) {
+        return results;
+      }
+
+      return this.transformMongoResults(results);
+    }
+
+    const { scalarFields, relations } = options.mongoFieldsExpanded;
 
     for (const rel of relations) {
       const needsNestedPipeline = rel.nestedFields && rel.nestedFields.length > 0;
@@ -347,7 +393,7 @@ export class MongoQueryExecutor {
     scalarFields: string[],
     relations: any[]
   ): Promise<void> {
-    const baseMeta = await this.metadataCache.lookupTableByName(options.table);
+    const baseMeta = this.metadata?.tables?.get(options.table);
     const allRelations = baseMeta?.relations || [];
     const allColumns = baseMeta?.columns || [];
 
@@ -402,78 +448,22 @@ export class MongoQueryExecutor {
     }
   }
 
-  private async executeSimpleQuery(collection: Collection, options: QueryOptions): Promise<any[]> {
-    const filter = options.where
-      ? this.whereToMongoFilter(options.where)
-      : options.mongoLogicalFilter
-      ? options.mongoLogicalFilter
-      : {};
-    let cursor = collection.find(filter);
-
-    const debugInfo: any = {
-      type: 'MongoDB Simple Query',
-      collection: options.table,
-      filter,
-    };
-
-    if (options.select) {
-      const projection: any = {};
-      for (const field of options.select) {
-        projection[field] = 1;
-      }
-      cursor = cursor.project(projection);
-      debugInfo.projection = projection;
-    }
-
-    if (options.sort) {
-      const sortSpec: any = {};
-      for (const sortOpt of options.sort) {
-        sortSpec[sortOpt.field] = sortOpt.direction === 'asc' ? 1 : -1;
-      }
-      cursor = cursor.sort(sortSpec);
-      debugInfo.sort = sortSpec;
-    }
-
-    if (options.offset) {
-      cursor = cursor.skip(options.offset);
-      debugInfo.offset = options.offset;
-    }
-
-    if (options.limit !== undefined && options.limit !== null && options.limit > 0) {
-      cursor = cursor.limit(options.limit);
-      debugInfo.limit = options.limit;
-    }
-
-    if (this.debugLog && this.debugLog.length >= 0) {
-      this.debugLog.push(debugInfo);
-    }
-
-    const results = await cursor.toArray();
-    return this.transformMongoResults(results);
-  }
-
   private transformMongoResults(documents: any[]): any[] {
     return documents.map(doc => this.mongoService['mapDocument'](doc));
   }
 
-  private whereToMongoFilter(conditions: WhereCondition[]): any {
+  private whereToMongoFilter(conditions: WhereCondition[], tableName?: string): any {
     const filter: any = {};
-    const { ObjectId } = require('mongodb');
 
     for (const condition of conditions) {
       let fieldName = condition.field.includes('.') ? condition.field.split('.').pop() : condition.field;
+      const tableNameForConversion = tableName || condition.field.split('.')[0];
 
       if (fieldName === 'id') {
         fieldName = '_id';
       }
 
-      let value = condition.value;
-      if (fieldName === '_id' && typeof value === 'string') {
-        try {
-          value = new ObjectId(value);
-        } catch (err) {
-        }
-      }
+      let value = this.convertValueByType(tableNameForConversion, fieldName, condition.value);
 
       switch (condition.operator) {
         case '=':
@@ -498,15 +488,15 @@ export class MongoQueryExecutor {
           filter[fieldName] = { $regex: value.replace(/%/g, '.*'), $options: 'i' };
           break;
         case 'in':
-          const inValues = fieldName === '_id'
-            ? (value as any[]).map(v => typeof v === 'string' ? new ObjectId(v) : v)
-            : value;
+          const inValues = Array.isArray(condition.value)
+            ? condition.value.map(v => this.convertValueByType(tableNameForConversion, fieldName, v))
+            : [value];
           filter[fieldName] = { $in: inValues };
           break;
         case 'not in':
-          const ninValues = fieldName === '_id'
-            ? (value as any[]).map(v => typeof v === 'string' ? new ObjectId(v) : v)
-            : value;
+          const ninValues = Array.isArray(condition.value)
+            ? condition.value.map(v => this.convertValueByType(tableNameForConversion, fieldName, v))
+            : [value];
           filter[fieldName] = { $nin: ninValues };
           break;
         case 'is null':
@@ -528,8 +518,14 @@ export class MongoQueryExecutor {
           filter[fieldName] = { $regex: `${escapedEnds}$`, $options: 'i' };
           break;
         case '_between':
-          if (Array.isArray(value) && value.length === 2) {
-            filter[fieldName] = { $gte: value[0], $lte: value[1] };
+          let betweenValues = condition.value;
+          if (typeof betweenValues === 'string') {
+            betweenValues = betweenValues.split(',').map(v => v.trim());
+          }
+          if (Array.isArray(betweenValues) && betweenValues.length === 2) {
+            const val0 = this.convertValueByType(tableNameForConversion, fieldName, betweenValues[0]);
+            const val1 = this.convertValueByType(tableNameForConversion, fieldName, betweenValues[1]);
+            filter[fieldName] = { $gte: val0, $lte: val1 };
           }
           break;
         case '_is_null':
@@ -546,7 +542,7 @@ export class MongoQueryExecutor {
     return filter;
   }
 
-  private convertLogicalFilterToMongo(filter: any): any {
+  private convertLogicalFilterToMongo(filter: any, tableName?: string): any {
     if (!filter || typeof filter !== 'object') {
       return {};
     }
@@ -556,7 +552,7 @@ export class MongoQueryExecutor {
         ? filter._and
         : Object.values(filter._and);
       return {
-        $and: conditions.map((condition: any) => this.convertLogicalFilterToMongo(condition))
+        $and: conditions.map((condition: any) => this.convertLogicalFilterToMongo(condition, tableName))
       };
     }
 
@@ -565,13 +561,13 @@ export class MongoQueryExecutor {
         ? filter._or
         : Object.values(filter._or);
       return {
-        $or: conditions.map((condition: any) => this.convertLogicalFilterToMongo(condition))
+        $or: conditions.map((condition: any) => this.convertLogicalFilterToMongo(condition, tableName))
       };
     }
 
     if (filter._not) {
       return {
-        $nor: [this.convertLogicalFilterToMongo(filter._not)]
+        $nor: [this.convertLogicalFilterToMongo(filter._not, tableName)]
       };
     }
 
@@ -587,7 +583,7 @@ export class MongoQueryExecutor {
 
         if (isOperator) {
           for (const [op, val] of Object.entries(value)) {
-            this.applyOperatorToMatch(mongoFilter, field, op, val);
+            this.applyOperatorToMatch(mongoFilter, tableName || '', field, op, val);
           }
         } else {
           mongoFilter[field] = value;
@@ -600,21 +596,78 @@ export class MongoQueryExecutor {
     return mongoFilter;
   }
 
-  private applyOperatorToMatch(matchCondition: any, field: string, op: string, val: any): void {
+  private convertValueByType(tableName: string, field: string, value: any): any {
     const { ObjectId } = require('mongodb');
-    let value = val;
 
     if (field === '_id' && typeof value === 'string') {
       try {
-        value = new ObjectId(value);
+        return new ObjectId(value);
       } catch (err) {
+        return value;
       }
     }
 
-    if (typeof value === 'string') {
-      if (value === 'true') value = true;
-      else if (value === 'false') value = false;
+    const tableMeta = this.metadata?.tables?.get(tableName);
+    if (!tableMeta?.columns) {
+      return value;
     }
+
+    const column = tableMeta.columns.find(col => col.name === field);
+    if (!column) {
+      return value;
+    }
+
+    if (value === null || value === undefined) {
+      return value;
+    }
+
+    switch (column.type) {
+      case 'int':
+      case 'integer':
+      case 'bigint':
+      case 'smallint':
+      case 'tinyint':
+        return typeof value === 'string' ? parseInt(value, 10) : Number(value);
+
+      case 'float':
+      case 'double':
+      case 'decimal':
+      case 'numeric':
+      case 'real':
+        return typeof value === 'string' ? parseFloat(value) : Number(value);
+
+      case 'boolean':
+      case 'bool':
+        if (typeof value === 'string') {
+          return value === 'true' || value === '1';
+        }
+        return Boolean(value);
+
+      case 'date':
+      case 'datetime':
+      case 'timestamp':
+        if (typeof value === 'string') {
+          return new Date(value);
+        }
+        return value;
+
+      case 'uuid':
+        if (typeof value === 'string') {
+          try {
+            return new ObjectId(value);
+          } catch (err) {
+            return value;
+          }
+        }
+        return value;
+
+      default:
+        return value;
+    }
+  }
+
+  private applyOperatorToMatch(matchCondition: any, tableName: string, field: string, op: string, val: any): void {
+    let value = this.convertValueByType(tableName, field, val);
 
     switch (op) {
       case '_contains':
@@ -636,15 +689,15 @@ export class MongoQueryExecutor {
         matchCondition[field] = { $ne: value };
         break;
       case '_in':
-        const inValues = field === '_id' && Array.isArray(val)
-          ? val.map(v => typeof v === 'string' ? new ObjectId(v) : v)
-          : val;
+        const inValues = Array.isArray(val)
+          ? val.map(v => this.convertValueByType(tableName, field, v))
+          : [value];
         matchCondition[field] = { $in: inValues };
         break;
       case '_not_in':
-        const ninValues = field === '_id' && Array.isArray(val)
-          ? val.map(v => typeof v === 'string' ? new ObjectId(v) : v)
-          : val;
+        const ninValues = Array.isArray(val)
+          ? val.map(v => this.convertValueByType(tableName, field, v))
+          : [value];
         matchCondition[field] = { $nin: ninValues };
         break;
       case '_gt':
@@ -668,8 +721,14 @@ export class MongoQueryExecutor {
         matchCondition[field] = isNotNullMatch ? { $ne: null } : { $eq: null };
         break;
       case '_between':
-        if (Array.isArray(val) && val.length === 2) {
-          matchCondition[field] = { $gte: val[0], $lte: val[1] };
+        let betweenVals = val;
+        if (typeof betweenVals === 'string') {
+          betweenVals = betweenVals.split(',').map(v => v.trim());
+        }
+        if (Array.isArray(betweenVals) && betweenVals.length === 2) {
+          const val0 = this.convertValueByType(tableName, field, betweenVals[0]);
+          const val1 = this.convertValueByType(tableName, field, betweenVals[1]);
+          matchCondition[field] = { $gte: val0, $lte: val1 };
         }
         break;
     }
@@ -708,7 +767,7 @@ export class MongoQueryExecutor {
       for (const [field, value] of Object.entries(fieldFilters)) {
         if (typeof value === 'object' && value !== null) {
           for (const [op, val] of Object.entries(value)) {
-            this.applyOperatorToMatch(matchCondition, field, op, val);
+            this.applyOperatorToMatch(matchCondition, tableName, field, op, val);
           }
         } else {
           matchCondition[field] = value;
@@ -719,7 +778,7 @@ export class MongoQueryExecutor {
       }
     }
 
-    const baseMeta = await this.metadataCache.lookupTableByName(tableName);
+    const baseMeta = this.metadata?.tables?.get(tableName);
     const allRelations = baseMeta?.relations || [];
 
     const additionalRelations: any[] = [];
@@ -863,11 +922,11 @@ export class MongoQueryExecutor {
       nestedFields: string[]; // Fields to include from related table (can be nested like 'methods.*')
     }>;
   }> {
-    if (!this.metadataCache) {
+    if (!this.metadata) {
       return { scalarFields: [], relations: [] };
     }
 
-    const baseMeta = await this.metadataCache.getTableMetadata(tableName);
+    const baseMeta = this.metadata.tables?.get(tableName);
     if (!baseMeta) {
       return { scalarFields: [], relations: [] };
     }
