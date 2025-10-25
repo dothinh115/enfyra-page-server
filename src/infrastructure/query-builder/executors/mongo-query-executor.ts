@@ -217,7 +217,7 @@ export class MongoQueryExecutor {
         });
       }
       const results = await collection.aggregate(options.pipeline).toArray();
-      return this.transformMongoResults(results);
+      return results;
     }
 
     return this.executeAggregationPipeline(collection, options);
@@ -225,6 +225,15 @@ export class MongoQueryExecutor {
 
   private async executeAggregationPipeline(collection: Collection, options: QueryOptions): Promise<any[]> {
     const pipeline: any[] = [];
+
+    // Check if we have relation filters that require lookups before limiting
+    const hasRelationFilters = options.mongoRawFilter && this.metadata &&
+      Object.keys(options.mongoRawFilter).some(key => {
+        const tableMeta = this.metadata.tables?.get(options.table);
+        if (!tableMeta) return false;
+        const relation = tableMeta.relations?.find((r: any) => r.propertyName === key);
+        return !!relation; // Is a relation field
+      });
 
     if (options.mongoRawFilter && this.metadata) {
       const tableMeta = this.metadata.tables?.get(options.table);
@@ -239,14 +248,7 @@ export class MongoQueryExecutor {
     }
 
     if (!options.mongoFieldsExpanded) {
-      if (options.select) {
-        const projection: any = {};
-        for (const field of options.select) {
-          projection[field] = 1;
-        }
-        pipeline.push({ $project: projection });
-      }
-
+      // OPTIMIZATION: Apply sort/limit BEFORE projection for simple queries
       if (options.sort) {
         const sortSpec: any = {};
         for (const sortOpt of options.sort) {
@@ -270,6 +272,14 @@ export class MongoQueryExecutor {
         }
       }
 
+      if (options.select) {
+        const projection: any = {};
+        for (const field of options.select) {
+          projection[field] = 1;
+        }
+        pipeline.push({ $project: projection });
+      }
+
       if (this.debugLog && this.debugLog.length >= 0) {
         this.debugLog.push({
           type: 'MongoDB Aggregation Pipeline',
@@ -284,11 +294,37 @@ export class MongoQueryExecutor {
         return results;
       }
 
-      return this.transformMongoResults(results);
+      return results;
     }
 
     const { scalarFields, relations } = options.mongoFieldsExpanded;
 
+    // OPTIMIZATION: If no relation filters, apply sort/limit BEFORE lookups
+    // This reduces the number of documents that need to be joined
+    if (!hasRelationFilters) {
+      if (options.sort) {
+        const sortSpec: any = {};
+        for (const sortOpt of options.sort) {
+          let fieldName = sortOpt.field.includes('.') ? sortOpt.field.split('.').pop() : sortOpt.field;
+          if (fieldName === 'id') {
+            fieldName = '_id';
+          }
+          sortSpec[fieldName] = sortOpt.direction === 'asc' ? 1 : -1;
+        }
+        pipeline.push({ $sort: sortSpec });
+      }
+
+      if (!options.mongoCountOnly) {
+        if (options.offset) {
+          pipeline.push({ $skip: options.offset });
+        }
+        if (options.limit !== undefined && options.limit !== null && options.limit > 0) {
+          pipeline.push({ $limit: options.limit });
+        }
+      }
+    }
+
+    // Now apply lookups (on limited dataset if no relation filters)
     for (const rel of relations) {
       const needsNestedPipeline = rel.nestedFields && rel.nestedFields.length > 0;
       const relationFilter = options.mongoRawFilter?.[rel.propertyName];
@@ -356,29 +392,34 @@ export class MongoQueryExecutor {
       }
     }
 
-    if (options.sort) {
-      const sortSpec: any = {};
-      for (const sortOpt of options.sort) {
-        let fieldName = sortOpt.field.includes('.') ? sortOpt.field.split('.').pop() : sortOpt.field;
-        if (fieldName === 'id') {
-          fieldName = '_id';
+    // If we had relation filters, apply sort/limit AFTER lookups
+    if (hasRelationFilters) {
+      if (options.sort) {
+        const sortSpec: any = {};
+        for (const sortOpt of options.sort) {
+          let fieldName = sortOpt.field.includes('.') ? sortOpt.field.split('.').pop() : sortOpt.field;
+          if (fieldName === 'id') {
+            fieldName = '_id';
+          }
+          sortSpec[fieldName] = sortOpt.direction === 'asc' ? 1 : -1;
         }
-        sortSpec[fieldName] = sortOpt.direction === 'asc' ? 1 : -1;
+        pipeline.push({ $sort: sortSpec });
       }
-      pipeline.push({ $sort: sortSpec });
+
+      if (!options.mongoCountOnly) {
+        if (options.offset) {
+          pipeline.push({ $skip: options.offset });
+        }
+        if (options.limit !== undefined && options.limit !== null && options.limit > 0) {
+          pipeline.push({ $limit: options.limit });
+        }
+      }
     }
 
     await addProjectionStage(this.metadata, pipeline, options.table, scalarFields, relations);
 
     if (options.mongoCountOnly) {
       pipeline.push({ $count: 'count' });
-    } else {
-      if (options.offset) {
-        pipeline.push({ $skip: options.offset });
-      }
-      if (options.limit !== undefined && options.limit !== null && options.limit > 0) {
-        pipeline.push({ $limit: options.limit });
-      }
     }
 
     if (this.debugLog && this.debugLog.length >= 0) {
@@ -395,7 +436,7 @@ export class MongoQueryExecutor {
       return results;
     }
 
-    return this.transformMongoResults(results);
+    return results;
   }
 
   private async addProjectionStage(
@@ -459,7 +500,4 @@ export class MongoQueryExecutor {
     }
   }
 
-  private transformMongoResults(documents: any[]): any[] {
-    return documents.map(doc => this.mongoService['mapDocument'](doc));
-  }
 }
