@@ -1,0 +1,46 @@
+name: Test SSH Connection
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-connection:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Test SSH Connection with Debug
+        uses: appleboy/ssh-action@v0.1.5
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: 22
+          debug: true
+          command_timeout: 30s
+          script: |
+            echo "=== SSH Connection Successful ==="
+            echo "Hostname: $(hostname)"
+            echo "User: $(whoami)"
+            echo "Date: $(date)"
+            echo "Uptime: $(uptime)"
+            echo "Current directory: $(pwd)"
+            echo ""
+            echo "=== PM2 Status ==="
+            pm2 status
+            echo ""
+            echo "=== App Status ==="
+            curl -s http://localhost:1105 | head -5 || echo "App not responding"
+
+      - name: Show Connection Info
+        if: failure()
+        run: |
+          echo "::error::SSH connection failed"
+          echo "Possible reasons:"
+          echo "1. VPS provider blocks GitHub Actions IPs"
+          echo "2. SSH key is incorrect in GitHub Secrets"
+          echo "3. Firewall blocking port 22"
+          echo "4. Server is down"
+          echo ""
+          echo "To fix:"
+          echo "1. Check GitHub Secrets: VPS_HOST, VPS_USER, VPS_SSH_KEY"
+          echo "2. Contact VPS provider to whitelist GitHub Actions IPs"
+          echo "3. Or use Self-Hosted Runner instead"
