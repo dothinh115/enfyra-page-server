@@ -70,3 +70,4 @@ AI_MEMORY_BE_old.md
 
 # Server Configuration (contains sensitive credentials)
 server-config.md
+deploy-ssh-key.txt
