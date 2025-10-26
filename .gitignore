@@ -72,4 +72,5 @@ AI_MEMORY_BE_old.md
 server-config.md
 deploy-ssh-key.txt
 deploy.sh
+deploy-app.sh
 setup-runner.sh
