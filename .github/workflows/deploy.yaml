@@ -17,7 +17,7 @@ jobs:
           port: 22
           script: |
             # Set project variables (FIXED: match ecosystem.config.js)
-            export PROJECT_NAME="enfyra-be"
+            export PROJECT_NAME="enfyra-server"
             export APP_DIR="/apps/server"
             
             # Setup PATH for tools
