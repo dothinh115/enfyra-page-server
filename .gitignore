@@ -67,3 +67,6 @@ AI_MEMORY_BE_old.md
 
 # Documentation
 /documents
+
+# Server Configuration (contains sensitive credentials)
+server-config.md

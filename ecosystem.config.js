@@ -3,7 +3,7 @@ module.exports = {
     {
       name: 'enfyra-be',
       script: 'dist/src/main.js',
-      instances: '2',
+      instances: '4',
       exec_mode: 'cluster',
       watch: false,
       autorestart: true,
