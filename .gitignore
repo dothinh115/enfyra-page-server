@@ -76,3 +76,6 @@ server-config.md
 deploy-ssh-key.txt
 deploy.sh
 setup-runner.sh
+
+# Claude configuration
+.clauderc
