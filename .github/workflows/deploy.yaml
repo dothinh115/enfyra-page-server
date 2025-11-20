@@ -21,8 +21,8 @@ jobs:
         run: |
           sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no $VPS_USER@$VPS_HOST << 'ENDSSH'
             # Set project variables (FIXED: match ecosystem.config.js)
-            export PROJECT_NAME="enfyra-server"
-            export APP_DIR="/apps/server"
+            export PROJECT_NAME="demo-server"
+            export APP_DIR="/apps/demo-server"
 
             # Setup PATH for tools
             export PATH="$PATH:/usr/bin:/usr/local/bin:$HOME/.local/bin"
