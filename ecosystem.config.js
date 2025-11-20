@@ -3,8 +3,7 @@ module.exports = {
     {
       name: 'demo-server',
       script: 'dist/src/main.js',
-      instances: '4',
-      exec_mode: 'cluster',
+      exec_mode: 'fork',
       watch: false,
       autorestart: true,
       max_restarts: 10,
