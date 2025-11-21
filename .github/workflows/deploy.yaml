@@ -51,10 +51,19 @@ jobs:
             cd $APP_DIR
             echo "Current directory: $(pwd)"
 
+            # Fix git safe.directory issue
+            echo "Configuring git safe.directory..."
+            $GIT_PATH config --global --add safe.directory $APP_DIR || true
+
             # Pull latest code with conflict resolution
             echo "Pulling latest code..."
+            # Stash any local changes to avoid conflicts
+            $GIT_PATH stash || true
+            # Fetch latest from origin
             $GIT_PATH fetch origin main
+            # Reset to origin/main (discard local changes)
             $GIT_PATH reset --hard origin/main
+            # Clean untracked files
             $GIT_PATH clean -fd
             echo "✅ Code updated to latest from git (local changes discarded)"
 
